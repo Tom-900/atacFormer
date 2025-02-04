@@ -86,7 +86,7 @@ class Decoder(nn.Module):
         return predictions
     
 
-bin_file = "/lustre/project/Stat/s1155184322/datasets/atacGPT/var_open_cells_23chr.txt"
+bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells_23chr.txt"
 bin_table = pd.read_table(bin_file, header=None)
 bin_ls = bin_table.iloc[:, 0].tolist()
 num_bins_list = []

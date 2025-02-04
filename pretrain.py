@@ -316,11 +316,11 @@ if scg.utils.isnotebook():
     args = parser.parse_args(
         args=[
             "-d",
-            "/lustre/project/Stat/s1155184322/datasets/atacGPT/HuBMAP/heart/cls_prefix_data.parquet",
+            "/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart/cls_prefix_data.parquet",
             "-e"
-            "/lustre/project/Stat/s1155184322/datasets/atacGPT/dna_emb_table.npy",
+            "/lustre/project/Stat/s1155184322/datasets/atacFormer/dna_emb_table.npy",
             "-a",
-            "/lustre/project/Stat/s1155184322/datasets/atacGPT/var_open_cells_23chr.txt",
+            "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells_23chr.txt",
             "-s",
             "./save/tmp",
             "--batch-size",
@@ -410,7 +410,7 @@ def _map_append_cls(dataset: Dataset) -> Dataset:
 
 # Load data
 # load everything from the data source
-if args.data_source.endswith("atacGPT"): # TODO: atacGPT should be changed accordingly
+if args.data_source.endswith("atacFormer"): # TODO: atacFormer should be changed accordingly
     raw_dataset_list = []
     DATA_LIST = [f for f in os.listdir(args.data_source) 
                      if os.path.isdir(os.path.join(args.data_source, f))]

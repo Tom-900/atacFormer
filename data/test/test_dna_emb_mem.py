@@ -5,10 +5,10 @@ dna_emb_table = np.random.randn(606200, 1280).astype(np.float32)
 print(f"Memory occupied by the array: {dna_emb_table.nbytes / (1024 ** 2):.2f} MB")
 
 # use memmap to save the memory
-filename = '/lustre/project/Stat/s1155184322/datasets/atacGPT/dna_emb_table.dat'
+filename = '/lustre/project/Stat/s1155184322/datasets/atacFormer/dna_emb_table.dat'
 dna_emb_table.tofile(filename)
 
-# filename = '/lustre/project/Stat/s1155184322/datasets/atacGPT/dna_emb_table.npy'
+# filename = '/lustre/project/Stat/s1155184322/datasets/atacFormer/dna_emb_table.npy'
 # np.save(filename, dna_emb_table)
 
 mmap_array = np.memmap(filename, dtype='float32', mode='r', shape=(606200, 1280))

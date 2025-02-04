@@ -40,7 +40,7 @@ seq = torch.normal(0, 1, (batch_size, max_len_, 512), dtype=torch.float16)
 seq = seq.to(device)
 
 # bin list
-bin_file = "/lustre/project/Stat/s1155184322/datasets/atacGPT/var_open_cells_23chr.txt"
+bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells_23chr.txt"
 bin_table = pd.read_table(bin_file, header=None)
 bin_ls = bin_table.iloc[:, 0].tolist()
 bin_total_counts = bin_table.iloc[:, 1].tolist()                      

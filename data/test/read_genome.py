@@ -7,11 +7,11 @@ from multiprocessing import Pool, cpu_count
 from numba import njit, prange
 
 # genome reference
-genome_file = "/lustre/project/Stat/s1155184322/datasets/atacGPT/GRCh38.primary_assembly.genome.fa.h5"
+genome_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/GRCh38.primary_assembly.genome.fa.h5"
 genome = h5py.File(genome_file, 'r')
 
 # full bin list
-bin_file = "/lustre/project/Stat/s1155184322/datasets/atacGPT/var_open_cells.txt"
+bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells.txt"
 bin_ls = []
 with open(bin_file, "r") as f:
     for line in f:

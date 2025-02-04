@@ -4,5 +4,5 @@
 cd "$(dirname "$0")"
 
 python ../build_large_scale_data.py \
-    --input-dir "/lustre/project/Stat/s1155184322/datasets/atacGPT/HuBMAP/heart" \
-    --bin-file "/lustre/project/Stat/s1155184322/datasets/atacGPT/var_open_cells_23chr.txt"
+    --input-dir "/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart" \
+    --bin-file "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells_23chr.txt"

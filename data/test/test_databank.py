@@ -1,14 +1,14 @@
 import sys
 sys.path.append("..")
 
-from open.data.test.test_databank import DataBank
+from data.test.test_databank import DataBank
 import scanpy as sc
 from preprocess import preprocessor
 from pathlib import Path
 
 
-atac_file = "/lustre/project/Stat/s1155184322/datasets/atacGPT/HuBMAP/heart/HBM233.GKRM.627_ATAC.h5ad"
-bin_file = "/lustre/project/Stat/s1155184322/datasets/atacGPT/var_open_cells_23chr.txt"
+atac_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart/HBM233.GKRM.627_ATAC.h5ad"
+bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells_23chr.txt"
 adata_atac = sc.read(atac_file)
 
 adata_atac = preprocessor(
@@ -20,7 +20,7 @@ adata_atac = preprocessor(
             batch_size=10000,
         )
 
-output_dir = Path("/lustre/project/Stat/s1155184322/datasets/atacGPT/HuBMAP/heart")
+output_dir = Path("/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart")
 files = [f for f in output_dir.glob("*.h5ad")]
 
 main_table_key = "X"
