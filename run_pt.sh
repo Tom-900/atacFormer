@@ -7,8 +7,8 @@ per_proc_batch_size=16
 
 python -m torch.distributed.launch --nproc_per_node=2 pretrain.py \
     --data-source "/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart/cls_prefix_data.parquet" \
-    --dna-emb-source "/lustre/project/Stat/s1155184322/datasets/atacFormer/dna_emb_table.npy" \
-    --atac-bin-source "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells_23chr.txt" \
+    --dna-emb "/lustre/project/Stat/s1155184322/datasets/atacFormer/dna_emb_table.npy" \
+    --bin-table "/lustre/project/Stat/s1155184322/datasets/atacFormer/bins_5k_table_23chr.txt" \
     --save-dir ./save/test \
     --max-seq-len $MAX_LENGTH \
     --batch-size $per_proc_batch_size \

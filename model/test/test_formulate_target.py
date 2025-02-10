@@ -27,7 +27,7 @@ input_pos = data_dict["masked_pos"]
 target_chr = data_dict["chr"]
 target_pos = data_dict["pos"]
 
-bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells_23chr.txt"
+bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/bins_5k_table_23chr.txt"
 bin_table = pd.read_table(bin_file, header=None)
 bin_ls = bin_table.iloc[:, 0].tolist()
 num_bins_list = []

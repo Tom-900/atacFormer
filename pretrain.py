@@ -24,7 +24,6 @@ from datasets import Dataset, load_dataset, concatenate_datasets
 
 import scgpt as scg
 from scgpt.utils import MainProcessOnly
-from scgpt import logger
 
 sys.path.insert(0, "../")
 sys.path.insert(0, "../../")
@@ -33,11 +32,26 @@ from model.model import TransformerModel
 from model.data_collator import DataCollator
 from model.utils import chr_pos_to_idx
 
-# torch.autograd.set_detect_anomaly(True)
-
 sc.set_figure_params(figsize=(4, 4))
 sc.settings.verbosity = "debug"
 scg.utils.set_seed(42)
+
+
+# define the logger
+import logging
+logger = logging.getLogger("atacFormer")
+# check if logger has been initialized
+if not logger.hasHandlers() or len(logger.handlers) == 0:
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "%(name)s - %(levelname)s - %(message)s", datefmt="%H:%M:%S"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
 
 # argparse
 parser = argparse.ArgumentParser()
@@ -50,17 +64,17 @@ parser.add_argument(
 )
 parser.add_argument(
     "-e",
-    "--dna-emb-source",
+    "--dna-emb",
     type=str,
     required=True,
     help="The directory containing the DNA embedding table.",
 )
 parser.add_argument(
-    "-a",
-    "--atac-bin-source",
+    "-b",
+    "--bin-table",
     type=str,
     required=True,
-    help="The directory containing the ATAC bin list and the total counts.",
+    help="The file containing the ATAC bins list.",
 )
 parser.add_argument(
     "-s",
@@ -216,19 +230,26 @@ parser.add_argument(
     help="Whether to use the fast transformer. Default is True.",
 )
 parser.add_argument(
+    "--loss-weight-class",
+    type=float,
+    default=300,
+    help="The weight for class 1 and 2 in cross entropy loss calculation. \
+    Default is 300 (6e5 tokens in total / 2e3 tokens each cell).",
+)
+parser.add_argument(
     "--weight-cls",
     type=float,
     default=0.5,
     help="The weight for cls prediction. Default is 0.5.",
 )
 parser.add_argument(
-    "--weight-token",
+    "--acc-weight-token",
     type=float,
     default=0.1,
     help="The weight for token prediction in accuracy calculation. Default is 0.1.",
 )
 parser.add_argument(
-    "--weight-masked",
+    "--acc-weight-masked",
     type=float,
     default=0.1,
     help="The weight for masked position prediction in accuracy calculation. Default is 0.1.",
@@ -319,8 +340,8 @@ if scg.utils.isnotebook():
             "/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart/cls_prefix_data.parquet",
             "-e"
             "/lustre/project/Stat/s1155184322/datasets/atacFormer/dna_emb_table.npy",
-            "-a",
-            "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells_23chr.txt",
+            "-b",
+            "/lustre/project/Stat/s1155184322/datasets/atacFormer/bins_5k_table_23chr.txt",
             "-s",
             "./save/tmp",
             "--batch-size",
@@ -365,6 +386,7 @@ if IS_DATA_PARALLEL:
     device = torch.device("cuda:0")
     n_gpu = torch.cuda.device_count()
     world_size = torch.distributed.get_world_size()
+
     logger.info(
         f"device: {device} in world size {world_size}, "
         f"visible gpu(s): {os.environ['CUDA_VISIBLE_DEVICES']}/{n_gpu}"
@@ -386,8 +408,9 @@ if IS_DATA_PARALLEL:
 
 scg.utils.add_file_handler(logger, save_dir / "run.log")
 # log running date and current git commit
-logger.info(f"Running on {time.strftime('%Y-%m-%d %H:%M:%S')}")
-logger.info(f"Current git commit: {scg.utils.get_git_commit()}")
+if args.local_rank in [0, -1]:
+    logger.info(f"Running on {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Current git commit: {scg.utils.get_git_commit()}")
 
 writer = SummaryWriter(log_dir=save_dir / "tensorboard")
 if IS_DATA_PARALLEL:
@@ -431,7 +454,8 @@ if args.data_source.endswith("atacFormer"): # TODO: atacFormer should be changed
                 split="train",
                 cache_dir=str(cache_dir),
             )
-            logger.info(f"Loaded {tissue} examples from {cls_prefix_datatable}")
+            if args.local_rank in [0, -1]:
+                logger.info(f"Loaded {tissue} examples from {cls_prefix_datatable}")
             raw_dataset_list.append(tissue_dataset)
         print("merging dataset...")
         raw_dataset = concatenate_datasets(raw_dataset_list)
@@ -458,7 +482,8 @@ elif Path(args.data_source).is_dir() and args.data_source.endswith(".scb"):
             split="train",
             cache_dir=args.data_source,
         )
-        logger.info(f"Loaded {len(raw_dataset)} examples from {cls_prefix_datatable}")
+        if args.local_rank in [0, -1]:
+            logger.info(f"Loaded {len(raw_dataset)} examples from {cls_prefix_datatable}")
       
 # collection of parquet files
 elif Path(args.data_source).is_dir():
@@ -487,7 +512,8 @@ elif Path(args.data_source).is_dir():
             split="train",
             cache_dir=str(cache_dir),
         )
-        logger.info(f"Loaded {len(raw_dataset)} examples from {cls_prefix_datatable}")
+        if args.local_rank in [0, -1]:
+            logger.info(f"Loaded {len(raw_dataset)} examples from {cls_prefix_datatable}")
         
 # load from an adata file
 elif Path(args.data_source).is_file() and args.data_source.endswith(".h5ad"):
@@ -518,7 +544,8 @@ elif args.data_source.endswith("cls_prefix_data.parquet"):
                 split="train",
                 cache_dir=str(cache_dir),
             )
-    logger.info(f"Loaded {len(raw_dataset)} examples from {cls_prefix_datatable}")
+    if args.local_rank in [0, -1]:
+        logger.info(f"Loaded {len(raw_dataset)} examples from {cls_prefix_datatable}")
   
 # Using test data      
 elif args.data_source == "test":  
@@ -540,29 +567,35 @@ if args.load_model is not None:
     with open(model_config_file, "r") as f:
         model_configs = json.load(f)
     if args.cls_value != model_configs["cls_value"]:
-        logger.warning(
-            f"The cls value in the model directory to load ({model_dir}) "
-            "does not match the current pad token. Be careful if this is not expected."
-        )
+        if args.local_rank in [0, -1]:
+            logger.warning(
+                f"The cls value in the model directory to load ({model_dir}) "
+                "does not match the current pad token. Be careful if this is not expected."
+            )
     if args.mask_value != model_configs["mask_value"]:
-        logger.warning(
-            f"The mask value in the model directory to load ({model_dir}) "
-            "does not match the current pad value. Be careful if this is not expected."
-        )
+        if args.local_rank in [0, -1]:
+            logger.warning(
+                f"The mask value in the model directory to load ({model_dir}) "
+                "does not match the current pad value. Be careful if this is not expected."
+            )
     if args.eos_value != model_configs["eos_value"]:
-        logger.warning(
-            f"The eos value in the model directory to load ({model_dir}) "
-            "does not match the current pad value. Be careful if this is not expected."
-        )
+        if args.local_rank in [0, -1]:
+            logger.warning(
+                f"The eos value in the model directory to load ({model_dir}) "
+                "does not match the current pad value. Be careful if this is not expected."
+            )
     if args.pad_value != model_configs["pad_value"]:
-        logger.warning(
-            f"The pad value in the model directory to load ({model_dir}) "
-            "does not match the current pad token. Be careful if this is not expected."
+        if args.local_rank in [0, -1]:
+            logger.warning(
+                f"The pad value in the model directory to load ({model_dir}) "
+                "does not match the current pad token. Be careful if this is not expected."
+            )
+        
+    if args.local_rank in [0, -1]:
+        logger.info(
+            f"Resume model from {model_file}, the model args will be overridden the "
+            f"config {model_config_file}."
         )
-    logger.info(
-        f"Resume model from {model_file}, the model args will be overridden the "
-        f"config {model_config_file}."
-    )
     args.embsize = model_configs["embsize"]
     args.nheads = model_configs["nheads"]
     args.d_hid = model_configs["d_hid"]
@@ -585,8 +618,9 @@ raw_dataset = raw_dataset.with_format("torch")
 raw_dataset = raw_dataset.train_test_split(test_size=args.valid_size_or_ratio, shuffle=True)
 train_dataset = raw_dataset["train"]
 valid_dataset = raw_dataset["test"]
-logger.info(f"train set number of samples: {len(train_dataset)}, ")
-logger.info(f"valid set number of samples: {len(valid_dataset)}, ")
+if args.local_rank in [0, -1]:
+    logger.info(f"train set number of samples: {len(train_dataset)}, ")
+    logger.info(f"valid set number of samples: {len(valid_dataset)}, ")
 
 # data collator for online padding and sampling
 # make separate two types of input and output
@@ -642,9 +676,8 @@ if USE_CLS:
     ct_labels = np.array(ct_labels)
     
 # Prepare the DNA embedding table and ATAC bin list
-bin_table = pd.read_table(args.atac_bin_source, header=None)
+bin_table = pd.read_table(args.bin_table, header=None)
 bin_ls = bin_table.iloc[:, 0].tolist()
-bin_total_counts = bin_table.iloc[:, 1].tolist()
 
 # get the number of bins for each chromosome
 num_bins_list = [] 
@@ -653,9 +686,9 @@ for chr in [str(i) for i in range(1, 23)] + ["X"]:
 
 # the first row of the DNA embedding table should be zero vector
 if args.use_memmap:
-    dna_emb_table = np.memmap(args.dna_emb_source, dtype='float16', mode='r', shape=(len(bin_ls) + 1, args.dna_emb_dim))
+    dna_emb_table = np.memmap(args.dna_emb, dtype='float16', mode='r', shape=(len(bin_ls) + 1, args.dna_emb_dim))
 else:
-    dna_emb_table = np.load(args.dna_emb_source, allow_pickle=True)
+    dna_emb_table = np.load(args.dna_emb, allow_pickle=True)
     dna_emb_table = torch.from_numpy(dna_emb_table).to(torch.float16)
 
 # Create and train model
@@ -688,7 +721,8 @@ if args.load_model is not None:
         model.load_state_dict(params)
         
 model.to(device)
-logger.info(model)
+if args.local_rank in [0, -1]:
+    logger.info(model)
 if IS_DATA_PARALLEL:
     model = torch.nn.parallel.DistributedDataParallel(
         model,
@@ -697,7 +731,9 @@ if IS_DATA_PARALLEL:
         find_unused_parameters=True,
     )
 
-criterion = nn.CrossEntropyLoss()
+# class weights for the loss function
+class_weights = [1, (1 - args.mask_ratio) * args.loss_weight_class, args.mask_ratio * args.loss_weight_class]
+criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, dtype=torch.float).to(device))
 criterion_cls = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -978,8 +1014,8 @@ def evaluate(model: nn.Module, valid_loader: DataLoader) -> Dict[str, torch.Tens
                 og_acc = (output_dict["og_logits"].argmax(dim=-1) == og_labels).float().mean()
                 ct_acc = (output_dict["ct_logits"].argmax(dim=-1) == ct_labels).float().mean()
                 
-            total_acc += acc + args.weight_masked * masked_acc \
-                + args.weight_token * token_acc \
+            total_acc += acc + args.acc_weight_masked * masked_acc \
+                + args.acc_weight_token * token_acc \
                 + args.weight_cls * (og_acc + ct_acc)
             
     total_loss = total_loss / len(valid_loader)
@@ -1061,7 +1097,8 @@ def eval_and_save(
 
 
 best_val_loss = float("inf")
-logger.info("Start training")
+if args.local_rank in [0, -1]:
+    logger.info("Start training")
 for epoch in range(1, args.epochs + 1):
     epoch_start_time = time.time()
     train(model, train_loader, epoch=epoch)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 atac_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart/HBM233.GKRM.627_ATAC.h5ad"
-bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/var_open_cells_23chr.txt"
+bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/bins_5k_table_23chr.txt"
 adata_atac = sc.read(atac_file)
 
 adata_atac = preprocessor(
