@@ -310,7 +310,7 @@ class DataBank:
         else:
             tokens = adata.var_names.tolist()
             
-        # buld chr, chr_pos
+        # build chr, chr_pos
 
         # build mapping to scBank datatable keys
         # _ind2ind = _map_ind(tokens, self.atac_vocab)  # old index to new index
