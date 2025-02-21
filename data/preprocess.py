@@ -94,11 +94,10 @@ def preprocessor(
     
 # testing the function
 if __name__ == '__main__':
-
     data_dir = Path("/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart")
     adata_atac = sc.read_h5ad(data_dir / "HBM233.GKRM.627_ATAC.h5ad")
     print(adata_atac)
     
-    filtered_bins_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/var_open_cells_filtered.txt"
+    filtered_bins_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/bins_5k_table_23chr.txt"
     adata_atac = preprocessor(adata_atac, filter_bin=True, bin_file=filtered_bins_file, filter_cell_by_bins=1000)
     print(adata_atac)

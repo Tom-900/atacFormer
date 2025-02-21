@@ -28,14 +28,19 @@ except ImportError:
     warnings.warn("performer_pytorch is not installed")
     performer_available = False
     
-from fast_transformers.masking import LengthMask
+import sys
+sys.path.append("../")
+sys.path.append("../../")
+
 from .layers import FastTransformerEncoderWrapper, TransformerEncoderLayer, FlashTransformerEncoderLayer
 from .utils import chr_pos_to_idx
+from ..data.vocab import BinVocab
 
 
 class TransformerModel(nn.Module):
     def __init__(
         self,
+        vocab: BinVocab, # bin vocabulary
         d_model: int, # embedding dim 
         nhead: int, # number of heads in the multiheadattention models
         d_hid: int, # the dimension of the feedforward network model
@@ -43,15 +48,15 @@ class TransformerModel(nn.Module):
         dropout: float = 0, # dropout rate
         cell_emb_style: str = "cls", # cell embedding style
         use_fast_transformer: bool = False, # whether to use fast transformer
-        fast_transformer_backend: str = "performer", # fast transformer backend
+        fast_transformer_backend: str = "flash", # fast transformer backend
         pre_norm: bool = False, # norm layer before/after the attention layer
         use_dna_encoder: bool = True, # whether to use DNA encoder
         dna_emb_dim: int = 512, # DNA embedding dim
         nlayers_dna_enc: int = 2, # number of layers in the DNA encoder
+        n_eos: int = 23, # the number of <eos> tokens
         bottoleneck_dim: int = 64, # bottleneck dim for bin embedding
         n_cls: Tuple[int, int] = (1, 1), # the number of classes for classification (organ, celltype)
         nlayers_cls: int = 3,   # the number of layers in the classifier
-        num_bins_list: list[int] = None, # number of bins for each chromosome
     ):
         
         super().__init__()
@@ -59,7 +64,7 @@ class TransformerModel(nn.Module):
         self.d_model = d_model
         self.cell_emb_style = cell_emb_style
         self.norm_scheme = "pre" if pre_norm else "post"
-        self.num_bins_list = num_bins_list
+        self.n_eos = n_eos
 
         # cell embedding style
         if cell_emb_style not in ["cls", "avg-pool", "w-pool"]:
@@ -89,11 +94,17 @@ class TransformerModel(nn.Module):
 
         # Extracting DNA sequence encoder
         if self.use_dna_encoder:
-            self.dna_encoder = DNAEncoder(dna_emb_dim, d_model, num_conv_layers=nlayers_dna_enc, num_linear_layers=nlayers_dna_enc)
+            self.dna_encoder = DNAEncoder(dna_emb_dim,
+                                          d_model,
+                                          num_conv_layers=nlayers_dna_enc,
+                                          num_linear_layers=nlayers_dna_enc)
+        # Bin vocab
+        self.bin_vocab = vocab
         
         # Bin encoder
-        self.bin_encoder = BinEmbedding(num_bins_list=self.num_bins_list, embedding_dim=d_model, bottleneck_dim=bottoleneck_dim)
-
+        self.bin_encoder = BinEmbedding(embedding_dim=d_model,
+                                        bottleneck_dim=bottoleneck_dim)
+        
         # Transformer encoder
         if use_fast_transformer:
             # linear transformer
@@ -135,38 +146,17 @@ class TransformerModel(nn.Module):
             self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
 
         # Model decoders
-        self.decoder = Decoder(d_model, num_bins_list=self.num_bins_list,
+        self.decoder = Decoder(d_model,
                                bottleneck_dim=bottoleneck_dim,
                                embedding_dim=d_model,
                                embedding_matrix=self.bin_encoder.embedding_matrix)
             
-        self.cls_decoder = ClsDecoder(d_model, n_cls, nlayers=nlayers_cls)
-
-    # basic forward method
-    def _encode(
-        self,
-        seq: Tensor, # DNA sequence, (batch_size, seq_len, dna_emb_dim)
-        input: Tensor, # bin index, (batch_size, seq_len)
-        src_key_padding_mask: Optional[Tensor] = None, # mask for src, (batch_size, seq_len)
-    ) -> Tensor:
-        
-        if self.use_dna_encoder:
-            seq_emb = self.dna_encoder(seq)  # (batch, seq_len, d_model)
-        else:
-            seq_emb = seq
-            
-        bin_emb = self.bin_encoder(input)  # (batch, seq_len, d_model)
-        total_embs = seq_emb + bin_emb
-        
-        if src_key_padding_mask is None:
-            src_key_padding_mask = torch.zeros(total_embs.shape[:2], dtype=torch.bool, device=total_embs.device)
-        
-        output = self.transformer_encoder(total_embs, src_key_padding_mask=src_key_padding_mask)
-        
-        return output  # (batch, seq_len, d_model)
+        self.cls_decoder = ClsDecoder(d_model,
+                                      n_cls,
+                                      nlayers=nlayers_cls)
     
+    # get cell embedding from the transformer output
     def _get_cell_emb_from_layer(self, layer_output: Tensor, weights: Tensor = None) -> Tensor:
-        # get cell embedding from the transformer output
         if self.cell_emb_style == "cls":
             cell_emb = layer_output[:, 0, :]  # (batch, embsize)
         elif self.cell_emb_style == "avg-pool":
@@ -180,42 +170,30 @@ class TransformerModel(nn.Module):
             cell_emb = F.normalize(cell_emb, p=2, dim=1)  # (batch, embsize)
 
         return cell_emb
-    
-    def _get_eos_emb_from_layer(self, 
-                                input: Tensor, #(batch_size, seq_len)
-                                layer_output: Tensor # (batch, seq_len, d_model)
-                                ):
-        # get the embedding corresponding to 23 <eos> tokens
-        eos_emb = torch.zeros(layer_output.size(0), 23, layer_output.size(2), device=layer_output.device)
-        for i in range(layer_output.size(0)):
-            # eos start index is sum(num_bins_list) + 1, which is in utils.py
-            eos_start = torch.where(input[i] == sum(self.num_bins_list) + 1)[0].item()
-            eos_emb[i] = layer_output[i][eos_start: eos_start + 23]
-            
-        return eos_emb
-    
-    def _formulate_targets(self,
-                          input_chr, # (batch_size, seq_len)
-                          target_chr, # (batch_size, seq_len)
-                          target_pos,  # (batch_size, seq_len)
-                         ):
-        formulated_targets = []
-        for c in range(23):
-            target_c = torch.zeros((input_chr.size(0), self.num_bins_list[c]), device=input_chr.device)
-            for i in range(input_chr.size(0)):
-                mask_ic = torch.where(target_chr[i] == c + 1)[0]
-                if torch.sum(mask_ic) == 0:
-                    continue
-                else:
-                    mask_ic_1 = mask_ic[torch.where(input_chr[i][mask_ic] == target_chr[i][mask_ic])[0]]
-                    mask_ic_2 = mask_ic[torch.where(input_chr[i][mask_ic] != target_chr[i][mask_ic])[0]]
-                    if torch.sum(mask_ic_1) > 0:
-                        target_c[i][target_pos[i][mask_ic_1] - 1] = 1
-                    if torch.sum(mask_ic_2) > 0:
-                        target_c[i][target_pos[i][mask_ic_2] - 1] = 2
-            formulated_targets.append(target_c)
-                
-        return formulated_targets
+
+    # basic forward method
+    def _encode(
+        self,
+        seq: Tensor, # DNA sequence, (batch_size, seq_len, dna_emb_dim)
+        input_ind: Tensor, # bin index, (batch_size, seq_len)
+        src_key_padding_mask: Optional[Tensor] = None, # mask for src, (batch_size, seq_len)
+    ) -> Tensor:
+        
+        # DNA embedding
+        if self.use_dna_encoder:
+            seq_emb = self.dna_encoder(seq)  # (batch, seq_len, d_model)
+        else:
+            seq_emb = seq
+          
+        # Bin embedding  
+        bin_emb = self.bin_encoder(input_ind)  # (batch, seq_len, d_model)
+        
+        # total embedding
+        total_embs = seq_emb + bin_emb
+        if src_key_padding_mask is None:
+            src_key_padding_mask = torch.zeros(total_embs.shape[:2], dtype=torch.bool, device=total_embs.device)
+        output = self.transformer_encoder(total_embs, src_key_padding_mask=src_key_padding_mask)
+        return output
         
     def forward(
         self,
@@ -223,27 +201,22 @@ class TransformerModel(nn.Module):
         data_dict: Dict[str, Any], # data_dict from data_collator
         src_key_padding_mask: Optional[Tensor] = None, # mask for src, (batch_size, seq_len)
         use_cls: bool = True, # whether to use classification for <cls> token
-    
     ) -> Mapping[str, Tensor]:
 
         output = {}
         
         # get input and target
-        input_chr = data_dict["masked_chr"] # (batch_size, seq_len)
-        input_pos = data_dict["masked_pos"]
-        target_chr = data_dict["chr"]
-        target_pos = data_dict["pos"]
+        input_ind = data_dict["input_ind"] # (batch_size, seq_len)
+        masked_ind = data_dict["masked_ind"]
         
-        # input with shape (batch_size, seq_len_), seq_len_ is the length of the input without <mask>
-        input = chr_pos_to_idx(input_chr, input_pos, self.num_bins_list, special_to_zero=False) # (batch_size, seq_len_)
         if src_key_padding_mask is None:
-            src_key_padding_mask = input.eq(sum(self.num_bins_list) + 24) # sum(self.num_bins_list) + 24 is for <pad> in utils.py
+            src_key_padding_mask = input_ind.eq(self.bin_vocab.token_name_to_ind("<pad>")) 
         
         # embedding and transformer
-        transformer_output = self._encode(seq, input, src_key_padding_mask=src_key_padding_mask)
+        transformer_output = self._encode(seq, input_ind, src_key_padding_mask=src_key_padding_mask)
         
-        eos_emb = self._get_eos_emb_from_layer(input, transformer_output) # shape: (batch, 23, d_model)
-        formulated_targets = self._formulate_targets(input_chr, target_chr, target_pos) # list[(batch, num_bins[i]) for i in range(23)]
+        eos_emb = self._get_eos_emb_from_layer(input_ind, transformer_output) # shape: (batch, 23, d_model)
+        formulated_targets = self._formulate_targets(masked_ind) # list[(batch, num_bins[i]) for i in range(23)]
         
         # decoder output
         predictions = self.decoder(eos_emb) # list[(batch, num_bins[i], 3) for i in range(23)]
@@ -261,6 +234,57 @@ class TransformerModel(nn.Module):
             output["ct_logits"] = cls_output["ct_logits"]
 
         return output
+    
+    # get the embedding corresponding to <eos> tokens
+    def _get_eos_emb_from_layer(self, 
+                                input_ind: Tensor, #(batch, seq_len)
+                                output_emb: Tensor # (batch, seq_len, d_model)
+                                ):
+        eos_emb = torch.zeros(output_emb.size(0), self.n_eos, output_emb.size(2),
+                              device=output_emb.device) # (batch, self.n_eos, d_model)
+        for i in range(input_ind.size(0)):
+            eos_start = torch.where(input_ind[i] == self.bin_vocab.token_name_to_ind("eos_1"))[0].item()
+            eos_emb[i] = output_emb[i][eos_start: eos_start + self.n_eos]
+            
+        return eos_emb
+    
+    def _formulate_targets(self, input_ind, masked_ind):
+        formulated_targets = []
+        
+        device = input_ind.device
+        input_shape = input_ind.size()
+        masked_shape = masked_ind.size()
+        
+        input_ind = input_ind.view(-1).tolist()
+        input_token = self.bin_vocab.ind_to_token(input_ind)
+        input_chr, input_pos = [token[0] for token in input_token], [token[1] for token in input_token]
+        
+        input_chr = torch.tensor(input_chr, device=device).view(input_shape)
+        input_pos = torch.tensor(input_pos, device=device).view(input_shape)
+        
+        masked_ind = masked_ind.view(-1).tolist()
+        masked_token = self.bin_vocab.ind_to_token(masked_ind)
+        masked_chr, masked_pos = [token[0] for token in masked_token], [token[1] for token in masked_token]
+        
+        masked_chr = torch.tensor(masked_chr, device=device).view(masked_shape)
+        masked_pos = torch.tensor(masked_pos, device=device).view(masked_shape)
+        
+        for c in range(1, 1 + self.n_eos):
+            bin_num = self.bin_vocab.bin_num_dict[c]
+            target_c = torch.zeros((input_shape[0], bin_num), device=device)
+            
+            row = torch.where(input_chr==c)[0]
+            col = input_pos[torch.where(input_chr==c)] - 1  # -1 because the index starts from 0
+            target_c[row, col] = 1
+            
+            row = torch.where(masked_chr==c)[0]
+            col = masked_pos[torch.where(masked_chr==c)] - 1  # -1 because the index starts from 0
+            target_c[row, col] = 2
+            
+            formulated_targets.append(target_c)
+                
+        return formulated_targets
+    
 
 
 class DNAEncoder(nn.Module):
@@ -300,15 +324,12 @@ class DNAEncoder(nn.Module):
         self.enc_norm = nn.LayerNorm(d_model)
 
     def forward(self, x: Tensor) -> Tensor:
-        # x = x.permute(0, 2, 1)  # (batch, embedding_dim, seq_len) for Conv1d
-        # if x.dtype == torch.float16:
-        #     self.conv_layers = self.conv_layers.to(dtype=torch.float16)
         x = x.permute(0, 2, 1)  # (batch, embedding_dim, seq_len) for Conv1d
         x = self.conv_layers(x)
         x = x.permute(0, 2, 1)  # (batch, seq_len, embedding_dim) for FC
         x = self.linear_layers(x)
         x = self.enc_norm(x)
-        return x # (batch, seq_len, d_model)
+        return x 
 
 
 class BinEmbedding(nn.Module):

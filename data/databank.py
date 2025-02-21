@@ -308,11 +308,8 @@ class DataBank:
             tokens = adata.var[token_col].tolist()
         else:
             tokens = adata.var_names.tolist()
-            
-        # build chr, chr_pos
 
         # build mapping to scBank datatable keys
-        # _ind2ind = _map_ind(tokens, self.atac_vocab)  # old index to new index
         chr_id = [23 if i.split(":")[0]=="X" else int(i.split(":")[0]) for i in tokens]
         pos_id = [int((int(bin_name.split(":")[1].split("-")[0]) - 1) / 5000 + 1) for bin_name in tokens]
 

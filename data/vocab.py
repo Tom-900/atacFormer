@@ -8,6 +8,10 @@ class BinVocab:
         self.bin_file = bin_file
         self.vocab, self.token_to_ind_map, self.token_name_to_ind_map, \
             self.ind_to_token_map, self.token_name_to_token_map = self._create_vocab()
+            
+        bin_num_ls = [len([i for i in bin_vocab.vocab["token"].tolist() if i[0] == c])\
+            for c in range(1, 24)]
+        self.bin_num_dict = {i: bin_num_ls[i-1] for i in range(1, 24)}
 
     def _create_vocab(self):
         bin_table = pd.read_table(self.bin_file, header=None)
@@ -104,7 +108,8 @@ class BinVocab:
             "token_to_ind_map": dict(self.token_to_ind_map),
             "token_name_to_ind_map": dict(self.token_name_to_ind_map),
             "ind_to_token_map": dict(self.ind_to_token_map),
-            "token_name_to_token_map": dict(self.token_name_to_token_map)
+            "token_name_to_token_map": dict(self.token_name_to_token_map),
+            "bin_num_dict": dict(self.bin_num_dict)
         }
         with open(file_path, 'w') as f:
             json.dump(vocab_dict, f, indent=4)
@@ -120,6 +125,7 @@ class BinVocab:
         bin_vocab.token_name_to_ind_map = vocab_dict["token_name_to_ind_map"]
         bin_vocab.ind_to_token_map = vocab_dict["ind_to_token_map"]
         bin_vocab.token_name_to_token_map = vocab_dict["token_name_to_token_map"]
+        bin_vocab.bin_num_dict = vocab_dict["bin_num_dict"]
         return bin_vocab
             
     
@@ -128,7 +134,7 @@ if __name__ == '__main__':
     bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/bins_5k_table_23chr.txt"
     bin_vocab = BinVocab(bin_file)
     
-    tokens = ["0:1", "0:2", "0:3"] * 5000
+    tokens = [(0,1), (1,2), (0,3)] * 5000
     bin_vocab.token_to_ind(tokens) 
     
     indices = [0, 1, 2] * 5000
