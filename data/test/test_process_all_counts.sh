@@ -4,6 +4,6 @@
 cd "$(dirname "$0")"
 
 python ../process_all_counts.py \
-    --data-source "/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart" \
+    --data-source "/lustre/project/Stat/1155223034/atacFormer/data/heart" \
     --pad-value 0 \
 

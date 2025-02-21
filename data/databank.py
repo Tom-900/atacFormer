@@ -31,14 +31,16 @@ class DataTable:
     """
     The data structure for a single-cell data table.
     """
-
+    #等同于初始化class给self.name和self.data
     name: str
     data: Optional[Dataset] = None
 
     @property
     def is_loaded(self) -> bool:
+        #只有当self.data不为空且是Dataset类型时，返回True
         return self.data is not None and isinstance(self.data, Dataset)
-
+    
+    #save self.data to the specified path and in the specified format
     def save(
         self,
         path: Union[Path, str],
@@ -70,6 +72,7 @@ class MetaInfo:
 
     def __post_init__(self):
         if self.on_disk_path is not None:
+            #将path从str转换为Path
             self.on_disk_path: Path = Path(self.on_disk_path)
 
     def save(self, 
@@ -89,9 +92,11 @@ class MetaInfo:
             "main_data": self.main_table_key,
         }
         if suffix is not None and isinstance(suffix, str):
+            #在/path/manifest.suffix.json中保存manifests
             with open(path / f"manifest.{suffix}.json", "w") as f:
                 json.dump(manifests, f, indent=2)
         else:
+            #在/path/manifest.json中保存manifests
             with open(path / f"manifest.json", "w") as f:
                 json.dump(manifests, f, indent=2)
 
@@ -123,9 +128,10 @@ class MetaInfo:
             raise ValueError(f"Path {path} is not a directory.")
         if not (path / "manifest.json").exists():
             raise ValueError(f"Path {path} does not contain manifest.json.")
-
+        #创造一个新的MetaInfo对象
         meta_info = cls()
         meta_info.on_disk_path = path
+        #新的MetaInfo对象调用load方法,将path下的manifest.json文件中的内容加载到自己的属性中
         meta_info.load(path)
         return meta_info
     
@@ -189,6 +195,7 @@ class DataBank:
         if len(self.data_tables) == 0:
             logger.debug("DataBank initialized with meta info only.")
             if self.settings.immediate_save:
+                #初始化meta_info
                 self.sync()
             return
 
@@ -253,7 +260,7 @@ class DataBank:
 
         if isinstance(to, str):
             to = Path(to)
-            
+        #确保 to 这个目录存在，如果不存在就创建它。
         to.mkdir(parents=True, exist_ok=True)
         db = cls(
             meta_info=MetaInfo(on_disk_path=to),
@@ -286,7 +293,7 @@ class DataBank:
             adata (:class:`AnnData`): Annotated data object to load.
             data_keys (list of :obj:`str`): List of data keys to load. If None,
                 all data keys in :attr:`adata.X` and :attr:`adata.layers` will be
-                loaded.
+                loaded.（需要加载的数据）
             token_col (:obj:`str`): Column name of the gene token. Tokens will be
                 converted to indices by :attr:`self.gene_vocab`.
         Returns:
@@ -305,6 +312,7 @@ class DataBank:
                 raise ValueError(f"token_col {token_col} must be of type str.")
 
         # validate matching between tokens and vocab
+        #可以用选的bin，如果没有输入选的bin，就用adata.var_names（所有的bin）
         if token_col is not None:
             tokens = adata.var[token_col].tolist()
         else:
@@ -314,6 +322,9 @@ class DataBank:
 
         # build mapping to scBank datatable keys
         # _ind2ind = _map_ind(tokens, self.atac_vocab)  # old index to new index
+
+        # chr is a list comprising of the chromosome names for each bin in tokens
+        # pos is a list comprising of the initial positions for each bin in tokens
         chr = [23 if i.split(":")[0]=="X" else int(i.split(":")[0]) for i in tokens]
         pos = [int((int(bin_name.split(":")[1].split("-")[0]) - 1) / 5000 + 1) for bin_name in tokens]
 
@@ -416,12 +427,17 @@ class DataBank:
             tokenized_data = {"id": [], "chr": [], "pos": []}
             tokenized_data["id"] = list(range(n_rows))
             for i in range(n_rows):  # ~2s/100k cells
+                
+                #对于每个细胞，找到对应的非0bin的index
                 row_indices = indices[indptr[i] : indptr[i + 1]]
+                #得到这个细胞内非0bin的chr和pos
                 row_new_chr = chr_array[row_indices]
                 row_new_pos = pos_array[row_indices]
 
-                tokenized_data["chr"].append(row_new_chr)
-                tokenized_data["pos"].append(row_new_pos)
+                tokenized_data["chr"].append(row_new_chr) #记录每个细胞非0bin的chr
+                tokenized_data["pos"].append(row_new_pos) #记录每个细胞的pos
+            # tokenized_data["chr"] is a list comprising of lists. Each sublist contains the chromosome names for each non-zero bin in a cell.
+            # tokenized_data["pos"] is a list comprising of lists. Each sublist contains the chromosome positions for each non-zero bin in a cell.
         else:
             tokenized_data = _nparray2mapped_values(data, chr, pos, "numba")  
 
@@ -447,7 +463,7 @@ class DataBank:
         if not path.is_dir():
             raise ValueError(f"Path {path} is not a directory.")
 
-        data_table_files = [f for f in path.glob("*.datatable.*") if f.is_file()]
+        data_table_files = [f for f in path.glob("*.datatable.*") if f.is_file()] #查找目录下所有符合datatable的文件
         if len(data_table_files) == 0:
             logger.warning(f"Loading empty DataBank at {path} without datatables.")
 
@@ -479,12 +495,15 @@ class DataBank:
         if len(self.data_tables) > 0:
             if self.main_table_key is None:
                 raise ValueError("Main table key can not be empty if non-empty data tables.")
-            if self.main_table_key not in self.data_tables.keys(): # if self.main_table_key not in self.data_tables
+            if self.main_table_key not in self.data_tables.keys():
+                #检查main_table_key是否在data_tables中
+                
                 raise ValueError("Main table key {self.main_table_key} not found in data tables.")
 
     def update_datatables(
         self,
         new_tables: List[DataTable],
+        #指定每个数据表的name
         use_names: List[str] = None,
         overwrite: bool = False,
         immediate_save: Optional[bool] = None,
@@ -514,6 +533,7 @@ class DataBank:
                 raise ValueError("use_names must have the same length as new_tables.")
 
         if not overwrite:
+            #Check the overlapping of the new data table names and the existing data table names
             overlaps = set(use_names) & set(self.data_tables.keys())
             if len(overlaps) > 0:
                 raise ValueError(
@@ -531,9 +551,11 @@ class DataBank:
         if self.settings.immediate_save:
             self.sync(["data_tables"])
 
+    #attr_keys: 需要同步的属性列表
     def sync(self, 
-             attr_keys: Union[List[str], str, None] = None,
+             attr_keys: Union[List[str], str, None] = None ,
              suffix: Optional[str] = None) -> None:
+        #选择性覆盖现有的DataBank中的data table
         """
         Sync the current DataBank to a data directory, including, save the updated
         data/vocab to files, update the meta info and save to files.
@@ -626,7 +648,7 @@ def _nparray2indexed_values(
     row_ids, chr_ls, pos_ls = [], [], []
     for i in range(len(data)):  # TODO: accelerate with numba? joblib?
         row = data[i]
-        idx = np.nonzero(row)[0]
+        idx = np.nonzero(row)[0] #the index of columns that are non-zero in the specific row
         chr_ = chr[idx]
         pos_ = pos[idx]
 

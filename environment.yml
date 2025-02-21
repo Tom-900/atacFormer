@@ -338,4 +338,4 @@ dependencies:
       - xxhash==3.5.0
       - yarl==1.13.1
       - zipp==3.20.2
-prefix: /users/s1155184322/miniconda3/envs/atacformer
+prefix: /lustre/project/Stat/1155223034/atacFormer/miniconda3/envs/atacformer

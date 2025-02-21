@@ -13,7 +13,7 @@ import os
 import scanpy as sc
 
 import sys
-sys.path.append('open/data_ar/scbank/databank.py')
+sys.path.append('/lustre/project/Stat/1155223034/atacFormer/data')
 
 from preprocess import preprocessor
 from databank import DataBank
