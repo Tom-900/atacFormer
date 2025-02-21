@@ -9,7 +9,7 @@ class BinVocab:
         self.vocab, self.token_to_ind_map, self.token_name_to_ind_map, \
             self.ind_to_token_map, self.token_name_to_token_map = self._create_vocab()
             
-        bin_num_ls = [len([i for i in bin_vocab.vocab["token"].tolist() if i[0] == c])\
+        bin_num_ls = [len([i for i in self.vocab["token"].tolist() if i[0] == c])\
             for c in range(1, 24)]
         self.bin_num_dict = {i: bin_num_ls[i-1] for i in range(1, 24)}
 

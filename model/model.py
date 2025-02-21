@@ -55,6 +55,7 @@ class TransformerModel(nn.Module):
         nlayers_dna_enc: int = 2, # number of layers in the DNA encoder
         n_eos: int = 23, # the number of <eos> tokens
         bottoleneck_dim: int = 64, # bottleneck dim for bin embedding
+        decoder_dim: int = 64, # decoder dim
         n_cls: Tuple[int, int] = (1, 1), # the number of classes for classification (organ, celltype)
         nlayers_cls: int = 3,   # the number of layers in the classifier
     ):
@@ -97,13 +98,16 @@ class TransformerModel(nn.Module):
             self.dna_encoder = DNAEncoder(dna_emb_dim,
                                           d_model,
                                           num_conv_layers=nlayers_dna_enc,
-                                          num_linear_layers=nlayers_dna_enc)
+                                          num_linear_layers=nlayers_dna_enc,
+                                          )
         # Bin vocab
         self.bin_vocab = vocab
         
         # Bin encoder
-        self.bin_encoder = BinEmbedding(embedding_dim=d_model,
-                                        bottleneck_dim=bottoleneck_dim)
+        self.bin_encoder = BinEmbedding(vocab=self.bin_vocab,
+                                        embedding_dim=d_model,
+                                        bottleneck_dim=bottoleneck_dim,
+                                        )
         
         # Transformer encoder
         if use_fast_transformer:
@@ -146,14 +150,17 @@ class TransformerModel(nn.Module):
             self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
 
         # Model decoders
-        self.decoder = Decoder(d_model,
-                               bottleneck_dim=bottoleneck_dim,
-                               embedding_dim=d_model,
-                               embedding_matrix=self.bin_encoder.embedding_matrix)
+        self.decoder = Decoder(vocab=self.bin_vocab,
+                               embedding_matrix=self.bin_encoder.embedding_matrix,
+                               eos_emb_dim=d_model,
+                               bin_emb_dim=bottoleneck_dim,
+                               d_model=decoder_dim,
+                               )
             
         self.cls_decoder = ClsDecoder(d_model,
                                       n_cls,
-                                      nlayers=nlayers_cls)
+                                      nlayers=nlayers_cls,
+                                      )
     
     # get cell embedding from the transformer output
     def _get_cell_emb_from_layer(self, layer_output: Tensor, weights: Tensor = None) -> Tensor:
@@ -286,7 +293,6 @@ class TransformerModel(nn.Module):
         return formulated_targets
     
 
-
 class DNAEncoder(nn.Module):
     def __init__(
         self,
@@ -333,19 +339,16 @@ class DNAEncoder(nn.Module):
 
 
 class BinEmbedding(nn.Module):
-    def __init__(self, num_bins_list, embedding_dim, bottleneck_dim):
+    def __init__(self, vocab, embedding_dim, bottleneck_dim):
         super(BinEmbedding, self).__init__()
-        
-        self.num_bins_list = num_bins_list # the number of bins for each chromosome
-        self.num_bins = sum(num_bins_list) # the number of bins (V)
+        self.bin_vocab = vocab
         self.embedding_dim = embedding_dim # Final embedding dimension (d)
         self.bottleneck_dim = bottleneck_dim # Bottleneck dimension (k)
 
-        # First matrix: Embedding lookup (V x k)
-        # 25 for <cls>, <eos> (23 chr) and <pad>
-        self.embedding_matrix = nn.Embedding(self.num_bins + 25, bottleneck_dim) 
+        # Embedding lookup (V x k)
+        self.embedding_matrix = nn.Embedding(len(self.bin_vocab.vocab), bottleneck_dim) 
         
-        # Second matrix: Projection (k x d)
+        # Projection (k x d)
         self.projection_matrix = nn.Linear(bottleneck_dim, embedding_dim, bias=False)
 
     def forward(self, input, use_proj=True):
@@ -361,33 +364,33 @@ class BinEmbedding(nn.Module):
 class Decoder(nn.Module):
     def __init__(
         self,
+        vocab: BinVocab,
+        bin_embedding: nn.Embedding,
         d_model: int,
-        embedding_dim: int,
-        bottleneck_dim: int,
-        num_bins_list: list[int],
-        embedding_matrix: nn.Embedding,
+        eos_emb_dim: int,
+        bin_emb_dim: int,
         num_states: int = 3, # 0: not present, 1: present, 2: masked
 
     ):
         super(Decoder, self).__init__()
+        
+        self.d_model = d_model
+        self.bin_emb_dim = bin_emb_dim
+        self.eos_emb_dim = eos_emb_dim
+        
+        # bin embedding and vocab
+        self.bin_embedding = bin_embedding
+        self.bin_vocab = vocab
+        
+        # projection for bin embedding and <eos> embedding
+        self.bin_projection = nn.Linear(bin_emb_dim, d_model, bias=False)
+        self.eos_projection = nn.Linear(eos_emb_dim, d_model)
+        
         # fully connected layer for total embedding
         self.fc = nn.Sequential(
             nn.Linear(d_model * 2, num_states),
             nn.ReLU(),
         )
-        
-        # the same as in BinEmbedding
-        self.d_model = d_model
-        self.bottleneck_dim = bottleneck_dim
-        self.embedding_dim = embedding_dim
-        
-        self.num_bins_list = num_bins_list 
-        self.num_bins = sum(num_bins_list) 
-        self.embedding_matrix = embedding_matrix
-        self.bin_projection = nn.Linear(bottleneck_dim, d_model, bias=False)
-        
-        # projection for <eos> embedding
-        self.eos_projection = nn.Linear(embedding_dim, d_model)
         
     def forward(self, 
                 eos_emb: Tensor, # (batch, 23, embedding_dim)
@@ -396,47 +399,56 @@ class Decoder(nn.Module):
                 use_eos_proj: bool=True,
                 ):  
         
-        assert eos_emb.size(2) == self.embedding_dim, "eos_emb should have the same embedding_dim as the model"
+        assert eos_emb.size(2) == self.eos_emb_dim, \
+            "eos_emb.size(2) should equal to self.eos_emb_dim"
         batch_size = eos_emb.size(0)
+        device = eos_emb.device
         
+        # use chunk to save memory
         if isinstance(chunk_size, int):
             if chunk_size > batch_size:
                 chunk_size = batch_size
             else:
-                assert batch_size % chunk_size == 0, "batch_size should be divisible by chunk_size"
+                assert batch_size % chunk_size == 0, \
+                    "batch_size should be divisible by chunk_size"
         elif chunk_size is None:
             chunk_size = batch_size
-           
-        num_bins_list = [0] + self.num_bins_list
-        cum_num_bin_tensor = (1 + torch.cumsum(torch.tensor(num_bins_list), dim=0)).long()
-        
+
         # project eos embedding
-        if use_eos_proj or self.embedding_dim != self.d_model:
+        if use_eos_proj or self.eos_emb_dim != self.d_model:
             eos_emb = self.eos_projection(eos_emb)  # (batch, 23, d_model)
         
         predictions = []
+        token_ls = self.bin_vocab.vocab["token"].tolist()
         for c in range(23):
-            # get bin embedding on chromosome c
-            idx_range = torch.arange(cum_num_bin_tensor[c], cum_num_bin_tensor[c+1], device=eos_emb.device)
-            bin_emb_c = self.embedding_matrix(idx_range)  # (bin_len_c, bottleneck_dim)
-            if use_bin_proj or self.bottleneck_dim != self.d_model:
-                bin_emb_c = self.bin_projection(bin_emb_c)  # (bin_len_c, d_model) 
-            bin_emb_c = bin_emb_c.unsqueeze(0).repeat(chunk_size, 1, 1)  # (chunk, bin_len_c, d_model)
+            # get bin index for chr c
+            token_c = [token for token in token_ls if token[0] == c+1]
+            ind_c = torch.tensor(self.bin_vocab.token_to_ind(token_c), device=device) # (len_c, )
             
-            bin_len_c = bin_emb_c.size(1)
+            # load bin embedding for chr c
+            bin_emb_c = self.bin_embedding(ind_c)  # (len_c, bin_emb_dim)
+            
+            # project bin embedding
+            if use_bin_proj or self.bin_emb_dim != self.d_model:
+                bin_emb_c = self.bin_projection(bin_emb_c)  # (len_c, d_model) 
+            
+            # repeat bin embedding
+            repeated_bin_emb_c = bin_emb_c.unsqueeze(0).repeat(chunk_size, 1, 1)  # (chunk, len_c, d_model)
+            
+            len_c = repeated_bin_emb_c.size(1)
             predictions_c = []
             
             for i in range(0, batch_size, chunk_size):
-                # get eos embedding
+                # get eos embedding for chunk i, chr c
                 eos_emb_c = eos_emb[i:i+chunk_size, c, :] # (chunk, embedding_dim)
-                repeated_eos_emb_c = eos_emb_c.unsqueeze(1).repeat(1, bin_len_c, 1)  # (chunk, bin_len_c, d_model)
+                repeated_eos_emb_c = eos_emb_c.unsqueeze(1).repeat(1, len_c, 1)  # (chunk, len_c, d_model)
                 
                 # concatenate bin and eos embeddings
-                total_emb_c = torch.cat((bin_emb_c, repeated_eos_emb_c), dim=2) # (chunk, bin_len_c, 2*d_model)
-                prediction_c = self.fc(total_emb_c)  # (chunk, bin_len_c, 3)
+                total_emb_c = torch.cat((repeated_bin_emb_c, repeated_eos_emb_c), dim=2) # (chunk, len_c, 2*d_model)
+                prediction_c = self.fc(total_emb_c)  # (chunk, len_c, 3)
                 predictions_c.append(prediction_c)
             
-            predictions_c = torch.cat(predictions_c, dim=0)  # (batch, bin_len_c, 3)
+            predictions_c = torch.cat(predictions_c, dim=0)  # (batch, len_c, 3)
             predictions.append(predictions_c)
         
         return predictions
