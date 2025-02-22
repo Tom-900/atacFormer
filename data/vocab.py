@@ -101,32 +101,6 @@ class BinVocab:
                 return self.token_name_to_token_map[token_names]
             else:
                 raise ValueError(f"Token name '{token_names}' not found in vocabulary.")
-
-    def save_vocab(self, file_path):
-        vocab_dict = {
-            "vocab": self.vocab.to_dict(orient="list"),
-            "token_to_ind_map": dict(self.token_to_ind_map),
-            "token_name_to_ind_map": dict(self.token_name_to_ind_map),
-            "ind_to_token_map": dict(self.ind_to_token_map),
-            "token_name_to_token_map": dict(self.token_name_to_token_map),
-            "bin_num_dict": dict(self.bin_num_dict)
-        }
-        with open(file_path, 'w') as f:
-            json.dump(vocab_dict, f, indent=4)
-            
-    @classmethod
-    def from_json(cls, file_path):
-        with open(file_path, 'r') as f:
-            vocab_dict = json.load(f)
-        
-        bin_vocab = cls.__new__(cls)
-        bin_vocab.vocab = pd.DataFrame(vocab_dict["vocab"])
-        bin_vocab.token_to_ind_map = vocab_dict["token_to_ind_map"]
-        bin_vocab.token_name_to_ind_map = vocab_dict["token_name_to_ind_map"]
-        bin_vocab.ind_to_token_map = vocab_dict["ind_to_token_map"]
-        bin_vocab.token_name_to_token_map = vocab_dict["token_name_to_token_map"]
-        bin_vocab.bin_num_dict = vocab_dict["bin_num_dict"]
-        return bin_vocab
             
     
 # example usage     
@@ -143,9 +117,3 @@ if __name__ == '__main__':
     token_names = ["<cls>", "<pad>", "<eos_1>", "<eos_2>", "<eos_3>"]
     bin_vocab.token_name_to_ind(token_names)
     bin_vocab.token_name_to_token(token_names)
-
-    vocab_path = "/lustre/project/Stat/s1155184322/datasets/atacFormer/bin_vocab.json"
-    bin_vocab.save_vocab(vocab_path)
-
-    # reload vocab
-    bin_vocab2 = BinVocab.from_json(vocab_path)

@@ -28,9 +28,9 @@ from scgpt.utils import MainProcessOnly
 sys.path.insert(0, "../")
 sys.path.insert(0, "../../")
 from data.databank import DataBank
+from data.vocab import BinVocab
 from model.model import TransformerModel
 from model.data_collator import DataCollator
-from model.utils import chr_pos_to_idx
 
 sc.set_figure_params(figsize=(4, 4))
 sc.settings.verbosity = "debug"
@@ -63,18 +63,11 @@ parser.add_argument(
     help="The name of the data source, or the path to the data file.",
 )
 parser.add_argument(
-    "-e",
-    "--dna-emb",
-    type=str,
-    required=True,
-    help="The directory containing the DNA embedding table.",
-)
-parser.add_argument(
     "-b",
-    "--bin-table",
+    "--bin-file",
     type=str,
     required=True,
-    help="The file containing the ATAC bins list.",
+    help="The file to construct bin vocab.",
 )
 parser.add_argument(
     "-s",
@@ -84,6 +77,12 @@ parser.add_argument(
     help="The directory to save the trained model and the results.",
 )
 parser.add_argument(
+    "--dna-emb-file",
+    type=str,
+    default=None,
+    help="The file containing the DNA embedding table.",
+)
+parser.add_argument(
     "--load-model",
     type=str,
     default=None,
@@ -91,8 +90,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--use-memmap",
-    type=bool,
-    default=False,
+    action="store_true",
     help="Whether to use numpy memmap to load the DNA embedding table. Default is False.",
 )
 
@@ -113,48 +111,22 @@ parser.add_argument(
     help="The number of gradient accumulation steps. Default is 1.",
 )
 parser.add_argument(
-    "--max-seq-len",
+    "--max-input-len",
     type=int,
-    default=5000,
-    help="The maximum length of the sequence. Default is 5000. The actual used "
-    "max length would be the minimum of this value and the length of the longest "
-    "sequence in the data.",
+    default=6800,
+    help="The maximum length of the input cell sequence. Default is 6800.",
 )
 parser.add_argument(
-    "--cls-value",
+    "--max-masked-len",
     type=int,
-    default=0,
-    help="The value used for <cls>. Default is 0.",
+    default=3000,
+    help="The maximum length of the masked cell sequence. Default is 3000.",
 )
 parser.add_argument(
-    "--mask-value",
-    type=int,
-    default=-1,
-    help="The value used for masking. Default is -1.",
-)
-parser.add_argument(
-    "--eos-value",
-    type=int,
-    default=-2,
-    help="The value used for <eos> (end of sentence). Default is -2.",
-)
-parser.add_argument(
-    "--pad-value",
-    type=int,
-    default=-3,
-    help="The value used for padding. Default is -3.",
-)
-parser.add_argument(
-    "--mask-ratio",
+    "--masked-ratio",
     type=float,
     default=0.15,
     help="The ratio of masked values in the training data. Default is 0.15.",
-)
-parser.add_argument(
-    "--trunc-by-sample",
-    action="store_true",
-    help="Whether to truncate the input by sampling rather than cutting off if "
-    "sequence length > max_seq_length. Default is False.",
 )
 
 # settings for training
@@ -214,42 +186,49 @@ parser.add_argument(
     "the value is above 1, will use it as the number of warmup steps.",
 )
 parser.add_argument(
-    "--no-cls",
-    action="store_true",
-    help="Whether to deactivate the classification loss. Default is False.",
-)
-parser.add_argument(
     "--fp16",
     action="store_true",
     help="Whether to train in automatic mixed precision. Default is False.",
 )
 parser.add_argument(
-    "--fast-transformer",
-    type=bool,
-    default=True,
-    help="Whether to use the fast transformer. Default is True.",
+    "--no-cls",
+    action="store_false",
+    dest="use_cls",
+    help="Whether to deactivate the classification loss. Default is False.",
 )
 parser.add_argument(
-    "--loss-weight-class",
+    "--no-fast-transformer",
+    action="store_false",
+    dest="fast_transformer",
+    help="Whether to disable the fast transformer. Default is True.", # when using --no-fast-transformer, the fast-transformer is False
+)
+parser.add_argument(
+    "--loss-weight",
     type=float,
     default=300,
     help="The weight for class 1 and 2 in cross entropy loss calculation. \
     Default is 300 (6e5 tokens in total / 2e3 tokens each cell).",
 )
 parser.add_argument(
-    "--weight-cls",
+    "--loss-weight-cls",
     type=float,
     default=0.5,
-    help="The weight for cls prediction. Default is 0.5.",
+    help="The weight for cls prediction in loss calculation. Default is 0.5.",
 )
 parser.add_argument(
-    "--acc-weight-token",
+    "--acc-weight-cls",
+    type=float,
+    default=0.5,
+    help="The weight for cls prediction in accuracy calculation. Default is 0.5.",
+)
+parser.add_argument(
+    "--acc-weight-1",
     type=float,
     default=0.1,
     help="The weight for token prediction in accuracy calculation. Default is 0.1.",
 )
 parser.add_argument(
-    "--acc-weight-masked",
+    "--acc-weight-2",
     type=float,
     default=0.1,
     help="The weight for masked position prediction in accuracy calculation. Default is 0.1.",
@@ -301,6 +280,11 @@ parser.add_argument(
     "output layer. Default is 3.",
 )
 parser.add_argument(
+    "--use-dna-emb",
+    action="store_true",
+    help="Whether to use DNA embedding. Default is False.",
+)
+parser.add_argument(
     "--dna-emb-dim",
     type=int,
     default=512,
@@ -308,8 +292,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--use-dna-encoder",
-    type=bool,
-    default=False,
+    action="store_true",
     help="Whether to use DNA encoder. Default is False.",
 )
 parser.add_argument(
@@ -317,6 +300,12 @@ parser.add_argument(
     type=int,
     default=2,
     help="The number of layers for the DNA embedding vector encoder. Default is 2.",
+)
+parser.add_argument(
+    "--decoder-dim",
+    type=int,
+    default=64,
+    help="Dimension of the embedding in the decoder (for both <eos> and bins). Default is 64.",
 )
 
 # settings for logging
@@ -338,23 +327,20 @@ if scg.utils.isnotebook():
         args=[
             "-d",
             "/lustre/project/Stat/s1155184322/datasets/atacFormer/HuBMAP/heart/cls_prefix_data.parquet",
-            "-e"
-            "/lustre/project/Stat/s1155184322/datasets/atacFormer/dna_emb_table.npy",
             "-b",
             "/lustre/project/Stat/s1155184322/datasets/atacFormer/bins_5k_table_23chr.txt",
             "-s",
             "./save/tmp",
+            "-dna-emb-file",
+            "/lustre/project/Stat/s1155184322/datasets/atacFormer/dna_emb_table.npy",
             "--batch-size",
             "16",
-            "--max-seq-len",
+            "--max-input-len",
             "5000",
-            "--mask-ratio",
-            "0",
-            "--dna-emb-dim",
-            "1280",
-            "--use-dna-encoder",
-            "True"
-            "--trunc-by-sample",
+            "--max-masked-len",
+            "3000",
+            "--masked-ratio",
+            "0.0",
             "--no-cls",
             "--fp16",
         ]
@@ -368,7 +354,7 @@ else:
 # show the arguments
 print(args)
 
-USE_CLS = not args.no_cls
+USE_CLS = args.use_cls
 
 IS_DATA_PARALLEL = args.local_rank != -1
 if IS_DATA_PARALLEL:
@@ -415,21 +401,28 @@ if args.local_rank in [0, -1]:
 writer = SummaryWriter(log_dir=save_dir / "tensorboard")
 if IS_DATA_PARALLEL:
     writer = MainProcessOnly(writer)
-
-
-# append <cls> at the beginning of the sequence
+    
 def _map_append_cls(dataset: Dataset) -> Dataset:
     dataset = dataset.map(
         lambda example: {
-            "chr": [args.cls_value] + example["chr"],
-            "pos": [args.cls_value] + example["pos"],
+            "chr_id": [bin_vocab.token_name_to_token("<cls>")[0]] + example["chr_id"],
+            "pos_id": [bin_vocab.token_name_to_token("<cls>")[1]] + example["pos_id"],
         },
         # batched=True,  # not using since then the map func needs to loop
         num_proc=len(os.sched_getaffinity(0)),
     )
-
     return dataset
 
+def _map_append_eos(dataset: Dataset) -> Dataset:
+    dataset = dataset.map(
+        lambda example: {
+            "chr_id": example["chr_id"] + [bin_vocab.token_name_to_token(f"<eos_{i}>")[0] for i in range(1, 24)],
+            "pos_id": example["pos_id"] + [bin_vocab.token_name_to_token(f"<eos_{i}>")[1] for i in range(1, 24)],
+        },
+        # batched=True,  # not using since then the map func needs to loop
+        num_proc=len(os.sched_getaffinity(0)),
+        )
+    return dataset
 
 # Load data
 # load everything from the data source
@@ -503,6 +496,7 @@ elif Path(args.data_source).is_dir():
                     cache_dir=str(cache_dir),
                 )
                 raw_dataset = _map_append_cls(raw_dataset)
+                raw_dataset = _map_append_eos(raw_dataset)
                 raw_dataset.to_parquet(str(cls_prefix_datatable))
             if IS_DATA_PARALLEL:
                 torch.distributed.barrier()  # wait for the mapping to finish
@@ -552,8 +546,8 @@ elif args.data_source == "test":
     raw_dataset = Dataset.from_dict(
         {
             "id": [1] * 300,
-            "chr": [[1, 2, 3]] * 300,
-            "pos": [[1, 2, 3]] * 300,
+            "chr_id": [[1, 2, 3]] * 300,
+            "pos_id": [[1, 2, 3]] * 300,
         }
     )
 
@@ -566,30 +560,6 @@ if args.load_model is not None:
     
     with open(model_config_file, "r") as f:
         model_configs = json.load(f)
-    if args.cls_value != model_configs["cls_value"]:
-        if args.local_rank in [0, -1]:
-            logger.warning(
-                f"The cls value in the model directory to load ({model_dir}) "
-                "does not match the current pad token. Be careful if this is not expected."
-            )
-    if args.mask_value != model_configs["mask_value"]:
-        if args.local_rank in [0, -1]:
-            logger.warning(
-                f"The mask value in the model directory to load ({model_dir}) "
-                "does not match the current pad value. Be careful if this is not expected."
-            )
-    if args.eos_value != model_configs["eos_value"]:
-        if args.local_rank in [0, -1]:
-            logger.warning(
-                f"The eos value in the model directory to load ({model_dir}) "
-                "does not match the current pad value. Be careful if this is not expected."
-            )
-    if args.pad_value != model_configs["pad_value"]:
-        if args.local_rank in [0, -1]:
-            logger.warning(
-                f"The pad value in the model directory to load ({model_dir}) "
-                "does not match the current pad token. Be careful if this is not expected."
-            )
         
     if args.local_rank in [0, -1]:
         logger.info(
@@ -612,6 +582,10 @@ if IS_DATA_PARALLEL:
 
 
 # data processing
+# load bin vocab
+bin_vocab = BinVocab(args.bin_file)
+TOTAL_BIN_NUM = sum(bin_vocab.bin_num_dict.values())
+    
 # convert format to return torch.tensor
 raw_dataset = raw_dataset.with_format("torch")
 
@@ -626,14 +600,10 @@ if args.local_rank in [0, -1]:
 # data collator for online padding and sampling
 # make separate two types of input and output
 collator = DataCollator(
-    do_padding=True if args.max_seq_len is not None else False,
-    pad_value=args.pad_value,
-    eos_value=args.eos_value,
-    mask_value=args.mask_value,
-    do_mlm=True,
-    mlm_probability=args.mask_ratio,
-    max_length=args.max_seq_len,
-    sampling=args.trunc_by_sample,
+    vocab=bin_vocab,
+    masked_ratio=args.masked_ratio,
+    max_input_len=args.max_input_len,
+    max_masked_len=args.max_masked_len,
 )
 
 # TODO: try batch sampler, train_sampler = BatchSampler()
@@ -676,24 +646,18 @@ if USE_CLS:
     og_labels = np.array(og_labels)
     ct_labels = np.array(ct_labels)
     
-# Prepare the DNA embedding table and ATAC bin list
-bin_table = pd.read_table(args.bin_table, header=None)
-bin_ls = bin_table.iloc[:, 0].tolist()
-
-# get the number of bins for each chromosome
-num_bins_list = [] 
-for chr in [str(i) for i in range(1, 23)] + ["X"]:
-    num_bins_list.append(len([bin_name for bin_name in bin_ls if bin_name.split(":")[0]==chr]))
-
-# the first row of the DNA embedding table should be zero vector
-if args.use_memmap:
-    dna_emb_table = np.memmap(args.dna_emb, dtype='float16', mode='r', shape=(len(bin_ls) + 1, args.dna_emb_dim))
-else:
-    dna_emb_table = np.load(args.dna_emb, allow_pickle=True)
-    dna_emb_table = torch.from_numpy(dna_emb_table).to(torch.float16)
+# the first 25 rows (<cls>, <pad> and 23 <eos>)) of the DNA embedding table should be zero vector
+print(args.use_dna_emb)
+if args.use_dna_emb:
+    if args.use_memmap:
+        dna_emb_table = np.memmap(args.dna_emb_file, dtype='float16', mode='r', shape=(len(bin_vocab.vocab), args.dna_emb_dim))
+    else:
+        dna_emb_table = np.load(args.dna_emb_file, allow_pickle=True)
+        dna_emb_table = torch.from_numpy(dna_emb_table).to(torch.float16)
 
 # Create and train model
 model = TransformerModel(
+    vocab=bin_vocab,
     d_model=args.embsize,
     nhead=args.nheads,
     d_hid=args.d_hid,
@@ -702,12 +666,13 @@ model = TransformerModel(
     use_fast_transformer=args.fast_transformer,
     fast_transformer_backend="flash",
     dna_emb_dim=args.dna_emb_dim,
+    use_dna_emb=args.use_dna_emb,
     use_dna_encoder=args.use_dna_encoder,
     nlayers_dna_enc=args.nlayers_dna_enc,
     bottoleneck_dim=args.bottoleneck_dim,
+    decoder_dim=args.decoder_dim,
     nlayers_cls=args.n_layers_cls,
     n_cls=(num_types_organs, num_types_celltypes) if USE_CLS else (1, 1),
-    num_bins_list=num_bins_list,
 )
 
 if args.load_model is not None:
@@ -732,9 +697,9 @@ if IS_DATA_PARALLEL:
         find_unused_parameters=True,
     )
 
-# class weights for the loss function
-class_weights = [1, (1 - args.mask_ratio) * args.loss_weight_class, args.mask_ratio * args.loss_weight_class]
-criterion = nn.CrossEntropyLoss(weight=torch.tensor(class_weights, dtype=torch.float).to(device))
+# state weights for the loss function (0, 1, 2)
+state_weights = [1, (1 - args.masked_ratio) * args.loss_weight, args.masked_ratio * args.loss_weight]
+criterion = nn.CrossEntropyLoss(weight=torch.tensor(state_weights, dtype=torch.float).to(device))
 criterion_cls = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
@@ -784,32 +749,28 @@ def train(model: nn.Module,
         global_iter = epoch * num_batches + batch
 
         # load the data on CPU
-        input_chr = data_dict["masked_chr"] # (batch_size, seq_len)
-        input_pos = data_dict["masked_pos"]
+        input_ind = data_dict["input_ind"] # (batch_size, seq_len)
+        masked_ind = data_dict["masked_ind"]
         
         # load DNA embedding on CPU
-        if args.use_memmap:
-            # the index of the bin for extracting the DNA-seq (seq_len_ < seq_len)
-            bin_ids_seq = chr_pos_to_idx(input_chr, input_pos, num_bins_list, special_to_zero=True) # (batch_size, seq_len_)
-            bin_ids_seq = bin_ids_seq.view(-1).numpy() # (batch_size * seq_len_)
-            dna_emb = torch.tensor(dna_emb_table[bin_ids_seq]) # (batch_size * seq_len_, dna_emb_dim)
-        else:
-            bin_ids_seq = chr_pos_to_idx(input_chr, input_pos, num_bins_list, special_to_zero=True) # (batch_size, seq_len_)
-            bin_ids_seq = bin_ids_seq.view(-1) # (batch_size * seq_len_)
-            dna_emb = dna_emb_table[bin_ids_seq]
-        
-        bin_ids_seq = torch.as_tensor(bin_ids_seq).view(input_chr.size(0), -1) # (batch_size, seq_len_)
-        dna_emb = dna_emb.view(bin_ids_seq.size(0), bin_ids_seq.size(1), -1) # (batch_size, seq_len_, dna_emb_dim)
-        dna_emb = dna_emb.to(device)
+        if args.use_dna_emb:
+            if args.use_memmap:
+                ind_seq = input_ind.clone().view(-1).numpy() # (batch_size * seq_len)
+                dna_emb = torch.tensor(dna_emb_table[ind_seq]) # (batch_size * seq_len, dna_emb_dim)
+            else:
+                ind_seq = input_ind.clone().view(-1) # (batch_size * seq_len)
+                dna_emb = dna_emb_table[ind_seq]
+            
+            dna_emb = dna_emb.view(input_ind.size(0), input_ind.size(1), -1) # (batch_size, seq_len, dna_emb_dim)
         
         # to device
-        data_dict = {k: v.to(device) for k, v in data_dict.items()}
-        dna_emb = dna_emb.to(device)
+        data_dict = {k: (v.to(device) if v is not None else v) for k, v in data_dict.items()}
+        dna_emb = dna_emb.to(device) if args.use_dna_emb else None
         
         with torch.cuda.amp.autocast(enabled=args.fp16):
             output_dict = model(
-                    seq=dna_emb,
                     data_dict=data_dict,
+                    dna_emb=dna_emb,
                     src_key_padding_mask=None,
                     use_cls=USE_CLS,
                     )
@@ -832,7 +793,7 @@ def train(model: nn.Module,
                 og_loss = criterion_cls(output_dict["og_logits"], og_labels)
                 ct_loss = criterion_cls(output_dict["ct_logits"], ct_labels)
                 cls_loss = og_loss + ct_loss
-                loss = loss + args.weight_cls * cls_loss
+                loss = loss + args.loss_weight_cls * cls_loss
                 writer.add_scalar("train/cls", cls_loss, global_iter)
 
             writer.add_scalar("train/loss", loss, global_iter)
@@ -867,7 +828,7 @@ def train(model: nn.Module,
                     masked_num += mask_c.sum()
                     masked_acc += ((predictions[c].argmax(dim=-1) == formulated_targets[c]) * mask_c).float().sum()
             
-            acc = acc / sum(num_bins_list) / args.batch_size
+            acc = acc / TOTAL_BIN_NUM / args.batch_size
             token_acc = token_acc / token_num if token_num > 0 else 0.0
             masked_acc = masked_acc / masked_num if masked_num > 0 else 0.0
 
@@ -943,32 +904,28 @@ def evaluate(model: nn.Module, valid_loader: DataLoader) -> Dict[str, torch.Tens
     with torch.no_grad():
         for data_dict in valid_loader:
             # load the data on CPU
-            input_chr = data_dict["masked_chr"] # (batch_size, seq_len)
-            input_pos = data_dict["masked_pos"]
+            input_ind = data_dict["input_ind"] # (batch_size, seq_len)
+            masked_ind = data_dict["masked_ind"]
             
             # load DNA embedding on CPU
-            if args.use_memmap:
-                # the index of the bin for extracting the DNA-seq
-                bin_ids_seq = chr_pos_to_idx(input_chr, input_pos, num_bins_list, special_to_zero=True) # (batch_size, seq_len)
-                bin_ids_seq = bin_ids_seq.view(-1).numpy() # (batch_size * seq_len)
-                dna_emb = torch.tensor(dna_emb_table[bin_ids_seq]) # (batch_size * seq_len, dna_emb_dim)
-            else:
-                bin_ids_seq = chr_pos_to_idx(input_chr, input_pos, num_bins_list, special_to_zero=True) # (batch_size, seq_len)
-                bin_ids_seq = bin_ids_seq.view(-1)
-                dna_emb = dna_emb_table[bin_ids_seq]
+            if args.use_dna_emb:
+                if args.use_memmap:
+                    ind_seq = input_ind.clone().view(-1).numpy() # (batch_size * seq_len)
+                    dna_emb = torch.tensor(dna_emb_table[ind_seq]) # (batch_size * seq_len, dna_emb_dim)
+                else:
+                    ind_seq = input_ind.clone().view(-1) # (batch_size * seq_len)
+                    dna_emb = dna_emb_table[ind_seq]
                 
-            bin_ids_seq = torch.as_tensor(bin_ids_seq).view(input_chr.size(0), -1) # (batch_size, seq_len_)
-            dna_emb = dna_emb.view(bin_ids_seq.size(0), bin_ids_seq.size(1), -1) # (batch_size, seq_len_, dna_emb_dim)
-            dna_emb = dna_emb.to(device)
-            
+                dna_emb = dna_emb.view(input_ind.size(0), input_ind.size(1), -1) # (batch_size, seq_len, dna_emb_dim)
+
             # to device
-            data_dict = {k: v.to(device) for k, v in data_dict.items()}
-            dna_emb = dna_emb.to(device)
+            data_dict = {k: (v.to(device) if v is not None else v) for k, v in data_dict.items()}
+            dna_emb = dna_emb.to(device) if args.use_dna_emb else None
 
             with torch.cuda.amp.autocast(enabled=args.fp16):
                 output_dict = model(
-                    seq=dna_emb,
                     data_dict=data_dict,
+                    dna_emb=dna_emb,
                     src_key_padding_mask=None,
                     use_cls=USE_CLS,
                     )
@@ -990,7 +947,7 @@ def evaluate(model: nn.Module, valid_loader: DataLoader) -> Dict[str, torch.Tens
                     og_loss = criterion_cls(output_dict["og_logits"], og_labels)
                     ct_loss = criterion_cls(output_dict["ct_logits"], ct_labels)
                     cls_loss = og_loss + ct_loss
-                    loss = loss + args.weight_cls * cls_loss
+                    loss = loss + args.loss_weight_cls * cls_loss
                 
             total_loss += loss.item()
             
@@ -1007,7 +964,7 @@ def evaluate(model: nn.Module, valid_loader: DataLoader) -> Dict[str, torch.Tens
                     masked_num += mask_c.sum()
                     masked_acc += ((predictions[c].argmax(dim=-1) == formulated_targets[c]) * mask_c).float().sum()
             
-            acc = acc / sum(num_bins_list) / args.batch_size
+            acc = acc / TOTAL_BIN_NUM / args.batch_size
             token_acc = token_acc / token_num if token_num > 0 else 0.0
             masked_acc = masked_acc / masked_num if masked_num > 0 else 0.0
             
@@ -1015,9 +972,8 @@ def evaluate(model: nn.Module, valid_loader: DataLoader) -> Dict[str, torch.Tens
                 og_acc = (output_dict["og_logits"].argmax(dim=-1) == og_labels).float().mean()
                 ct_acc = (output_dict["ct_logits"].argmax(dim=-1) == ct_labels).float().mean()
                 
-            total_acc += acc + args.acc_weight_masked * masked_acc \
-                + args.acc_weight_token * token_acc \
-                + args.weight_cls * (og_acc + ct_acc)
+            total_acc += acc + args.acc_weight_1 * token_acc \
+                + args.acc_weight_2 * masked_acc + args.acc_weight_cls * (og_acc + ct_acc)
             
     total_loss = total_loss / len(valid_loader)
     total_acc = total_acc / len(valid_loader)

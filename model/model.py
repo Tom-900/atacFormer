@@ -33,8 +33,7 @@ sys.path.append("../")
 sys.path.append("../../")
 
 from .layers import FastTransformerEncoderWrapper, TransformerEncoderLayer, FlashTransformerEncoderLayer
-from .utils import chr_pos_to_idx
-from ..data.vocab import BinVocab
+from data.vocab import BinVocab
 
 
 class TransformerModel(nn.Module):
@@ -50,6 +49,7 @@ class TransformerModel(nn.Module):
         use_fast_transformer: bool = False, # whether to use fast transformer
         fast_transformer_backend: str = "flash", # fast transformer backend
         pre_norm: bool = False, # norm layer before/after the attention layer
+        use_dna_emb: bool = True, # whether to use DNA embedding
         use_dna_encoder: bool = True, # whether to use DNA encoder
         dna_emb_dim: int = 512, # DNA embedding dim
         nlayers_dna_enc: int = 2, # number of layers in the DNA encoder
@@ -89,17 +89,18 @@ class TransformerModel(nn.Module):
         self.use_fast_transformer = use_fast_transformer
         self.fast_transformer_backend = fast_transformer_backend
         
-        if not use_dna_encoder:
-            assert d_model == dna_emb_dim, "d_model should be equal to dna_emb_dim when not using DNA encoder"
-        self.use_dna_encoder = use_dna_encoder
-
-        # Extracting DNA sequence encoder
-        if self.use_dna_encoder:
-            self.dna_encoder = DNAEncoder(dna_emb_dim,
+        if use_dna_emb:
+            if not use_dna_encoder:
+                assert d_model == dna_emb_dim, "d_model should be equal to dna_emb_dim when not using DNA encoder"
+            else:
+                self.dna_encoder = DNAEncoder(dna_emb_dim,
                                           d_model,
                                           num_conv_layers=nlayers_dna_enc,
                                           num_linear_layers=nlayers_dna_enc,
                                           )
+        self.use_dna_emb = use_dna_emb
+        self.use_dna_encoder = use_dna_encoder
+            
         # Bin vocab
         self.bin_vocab = vocab
         
@@ -151,7 +152,7 @@ class TransformerModel(nn.Module):
 
         # Model decoders
         self.decoder = Decoder(vocab=self.bin_vocab,
-                               embedding_matrix=self.bin_encoder.embedding_matrix,
+                               bin_embedding=self.bin_encoder.embedding_matrix,
                                eos_emb_dim=d_model,
                                bin_emb_dim=bottoleneck_dim,
                                d_model=decoder_dim,
@@ -181,31 +182,37 @@ class TransformerModel(nn.Module):
     # basic forward method
     def _encode(
         self,
-        seq: Tensor, # DNA sequence, (batch_size, seq_len, dna_emb_dim)
         input_ind: Tensor, # bin index, (batch_size, seq_len)
+        dna_emb: Optional[Tensor] = None, # DNA sequence, (batch_size, seq_len, dna_emb_dim)
         src_key_padding_mask: Optional[Tensor] = None, # mask for src, (batch_size, seq_len)
     ) -> Tensor:
         
         # DNA embedding
-        if self.use_dna_encoder:
-            seq_emb = self.dna_encoder(seq)  # (batch, seq_len, d_model)
-        else:
-            seq_emb = seq
+        if self.use_dna_emb:
+            assert dna_emb is not None, "dna_emb is required when use_dna_emb is True"    
+            if self.use_dna_encoder:
+                dna_emb = self.dna_encoder(dna_emb)  # (batch, seq_len, d_model)
+            else:
+                dna_emb = dna_emb
           
         # Bin embedding  
         bin_emb = self.bin_encoder(input_ind)  # (batch, seq_len, d_model)
         
         # total embedding
-        total_embs = seq_emb + bin_emb
+        total_embs = dna_emb + bin_emb if self.use_dna_emb else bin_emb
+        
+        # mask for input
         if src_key_padding_mask is None:
             src_key_padding_mask = torch.zeros(total_embs.shape[:2], dtype=torch.bool, device=total_embs.device)
+        
+        # transformer encoder
         output = self.transformer_encoder(total_embs, src_key_padding_mask=src_key_padding_mask)
         return output
         
     def forward(
         self,
-        seq: Tensor, # DNA sequence, (batch_size, seq_len, dna_emb_dim)
         data_dict: Dict[str, Any], # data_dict from data_collator
+        dna_emb: Optional[Tensor] = None, # DNA sequence, (batch_size, seq_len, dna_emb_dim)
         src_key_padding_mask: Optional[Tensor] = None, # mask for src, (batch_size, seq_len)
         use_cls: bool = True, # whether to use classification for <cls> token
     ) -> Mapping[str, Tensor]:
@@ -220,10 +227,10 @@ class TransformerModel(nn.Module):
             src_key_padding_mask = input_ind.eq(self.bin_vocab.token_name_to_ind("<pad>")) 
         
         # embedding and transformer
-        transformer_output = self._encode(seq, input_ind, src_key_padding_mask=src_key_padding_mask)
+        transformer_output = self._encode(input_ind, dna_emb, src_key_padding_mask=src_key_padding_mask)
         
         eos_emb = self._get_eos_emb_from_layer(input_ind, transformer_output) # shape: (batch, 23, d_model)
-        formulated_targets = self._formulate_targets(masked_ind) # list[(batch, num_bins[i]) for i in range(23)]
+        formulated_targets = self._formulate_targets(input_ind, masked_ind) # list[(batch, num_bins[i]) for i in range(23)]
         
         # decoder output
         predictions = self.decoder(eos_emb) # list[(batch, num_bins[i], 3) for i in range(23)]
@@ -250,7 +257,7 @@ class TransformerModel(nn.Module):
         eos_emb = torch.zeros(output_emb.size(0), self.n_eos, output_emb.size(2),
                               device=output_emb.device) # (batch, self.n_eos, d_model)
         for i in range(input_ind.size(0)):
-            eos_start = torch.where(input_ind[i] == self.bin_vocab.token_name_to_ind("eos_1"))[0].item()
+            eos_start = torch.where(input_ind[i] == self.bin_vocab.token_name_to_ind("<eos_1>"))[0].item()
             eos_emb[i] = output_emb[i][eos_start: eos_start + self.n_eos]
             
         return eos_emb
@@ -260,7 +267,8 @@ class TransformerModel(nn.Module):
         
         device = input_ind.device
         input_shape = input_ind.size()
-        masked_shape = masked_ind.size()
+        if masked_ind is not None:
+            masked_shape = masked_ind.size()
         
         input_ind = input_ind.view(-1).tolist()
         input_token = self.bin_vocab.ind_to_token(input_ind)
@@ -269,12 +277,13 @@ class TransformerModel(nn.Module):
         input_chr = torch.tensor(input_chr, device=device).view(input_shape)
         input_pos = torch.tensor(input_pos, device=device).view(input_shape)
         
-        masked_ind = masked_ind.view(-1).tolist()
-        masked_token = self.bin_vocab.ind_to_token(masked_ind)
-        masked_chr, masked_pos = [token[0] for token in masked_token], [token[1] for token in masked_token]
-        
-        masked_chr = torch.tensor(masked_chr, device=device).view(masked_shape)
-        masked_pos = torch.tensor(masked_pos, device=device).view(masked_shape)
+        if masked_ind is not None:
+            masked_ind = masked_ind.view(-1).tolist()
+            masked_token = self.bin_vocab.ind_to_token(masked_ind)
+            masked_chr, masked_pos = [token[0] for token in masked_token], [token[1] for token in masked_token]
+            
+            masked_chr = torch.tensor(masked_chr, device=device).view(masked_shape)
+            masked_pos = torch.tensor(masked_pos, device=device).view(masked_shape)
         
         for c in range(1, 1 + self.n_eos):
             bin_num = self.bin_vocab.bin_num_dict[c]
@@ -284,9 +293,10 @@ class TransformerModel(nn.Module):
             col = input_pos[torch.where(input_chr==c)] - 1  # -1 because the index starts from 0
             target_c[row, col] = 1
             
-            row = torch.where(masked_chr==c)[0]
-            col = masked_pos[torch.where(masked_chr==c)] - 1  # -1 because the index starts from 0
-            target_c[row, col] = 2
+            if masked_ind is not None:
+                row = torch.where(masked_chr==c)[0]
+                col = masked_pos[torch.where(masked_chr==c)] - 1  # -1 because the index starts from 0
+                target_c[row, col] = 2
             
             formulated_targets.append(target_c)
                 
