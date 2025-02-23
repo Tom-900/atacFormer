@@ -331,7 +331,7 @@ if scg.utils.isnotebook():
             "/lustre/project/Stat/s1155184322/datasets/atacFormer/bins_5k_table_23chr.txt",
             "-s",
             "./save/tmp",
-            "-dna-emb-file",
+            "--dna-emb-file",
             "/lustre/project/Stat/s1155184322/datasets/atacFormer/dna_emb_table.npy",
             "--batch-size",
             "16",
@@ -428,28 +428,28 @@ def _map_append_eos(dataset: Dataset) -> Dataset:
 # load everything from the data source
 if args.data_source.endswith("atacFormer"): # TODO: atacFormer should be changed accordingly
     raw_dataset_list = []
-    DATA_LIST = [f for f in os.listdir(args.data_source) 
+    DATA_BASE = [f for f in os.listdir(args.data_source) 
                      if os.path.isdir(os.path.join(args.data_source, f))]
     
-    for database in DATA_LIST:
-        TISSUE_LIST = [f for f in os.listdir(os.path.join(args.data_source, database)) 
+    for database in DATA_BASE:
+        DATA_LIST = [f for f in os.listdir(os.path.join(args.data_source, database)) 
                        if os.path.isdir(os.path.join(args.data_source, database, f))]
     
         root_data_source = Path(args.data_source) / database
-        for tissue in TISSUE_LIST:
-            tissue_data_path = root_data_source / tissue
-            cls_prefix_datatable = tissue_data_path / "cls_prefix_data.parquet"
-            cache_dir = tissue_data_path / "cache"
+        for data in DATA_LIST:
+            data_path = root_data_source / data
+            cls_prefix_datatable = data_path / "cls_prefix_data.parquet"
+            cache_dir = data_path / "cache"
             
-            tissue_dataset = load_dataset(
+            dataset = load_dataset(
                 "parquet",
                 data_files=str(cls_prefix_datatable),
                 split="train",
                 cache_dir=str(cache_dir),
             )
             if args.local_rank in [0, -1]:
-                logger.info(f"Loaded {tissue} examples from {cls_prefix_datatable}")
-            raw_dataset_list.append(tissue_dataset)
+                logger.info(f"Loaded {data} examples from {cls_prefix_datatable}")
+            raw_dataset_list.append(dataset)
         print("merging dataset...")
         raw_dataset = concatenate_datasets(raw_dataset_list)
         print("done merging dataset")
@@ -647,7 +647,6 @@ if USE_CLS:
     ct_labels = np.array(ct_labels)
     
 # the first 25 rows (<cls>, <pad> and 23 <eos>)) of the DNA embedding table should be zero vector
-print(args.use_dna_emb)
 if args.use_dna_emb:
     if args.use_memmap:
         dna_emb_table = np.memmap(args.dna_emb_file, dtype='float16', mode='r', shape=(len(bin_vocab.vocab), args.dna_emb_dim))
@@ -972,8 +971,11 @@ def evaluate(model: nn.Module, valid_loader: DataLoader) -> Dict[str, torch.Tens
                 og_acc = (output_dict["og_logits"].argmax(dim=-1) == og_labels).float().mean()
                 ct_acc = (output_dict["ct_logits"].argmax(dim=-1) == ct_labels).float().mean()
                 
-            total_acc += acc + args.acc_weight_1 * token_acc \
-                + args.acc_weight_2 * masked_acc + args.acc_weight_cls * (og_acc + ct_acc)
+            assert args.acc_weight_1 + args.acc_weight_2 <= 1, "The sum of acc_weight_1 and acc_weight_2 should be less than 1."
+            total_acc += (1 - args.acc_weight_1 - args.acc_weight_2) * acc + args.acc_weight_1 * token_acc \
+                + args.acc_weight_2 * masked_acc
+            if USE_CLS:
+                total_acc = (1 - args.acc_weight_cls) * total_acc + args.acc_weight_cls * (og_acc + ct_acc)
             
     total_loss = total_loss / len(valid_loader)
     total_acc = total_acc / len(valid_loader)
