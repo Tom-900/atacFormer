@@ -426,7 +426,7 @@ def _map_append_eos(dataset: Dataset) -> Dataset:
 
 # Load data
 # load everything from the data source
-if args.data_source.endswith("atacFormer"): # TODO: atacFormer should be changed accordingly
+if args.data_source.endswith("atacFormer"):
     raw_dataset_list = []
     DATA_BASE = [f for f in os.listdir(args.data_source) 
                      if os.path.isdir(os.path.join(args.data_source, f))]
