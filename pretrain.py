@@ -466,6 +466,7 @@ elif Path(args.data_source).is_dir() and args.data_source.endswith(".scb"):
         if not cls_prefix_datatable.exists():
             if args.local_rank in [0, -1]:
                 raw_dataset = _map_append_cls(raw_dataset)
+                raw_dataset = _map_append_eos(raw_dataset)
                 raw_dataset.to_parquet(cls_prefix_datatable)
             if IS_DATA_PARALLEL:
                 torch.distributed.barrier()  # wait for the mapping to finish

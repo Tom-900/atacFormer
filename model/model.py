@@ -114,10 +114,9 @@ class TransformerModel(nn.Module):
         if use_fast_transformer:
             # linear transformer
             if fast_transformer_backend == "linear":
-                if fast_transformer_backend == "linear":
-                    self.transformer_encoder = FastTransformerEncoderWrapper(
-                        d_model, nhead, d_hid, nlayers, dropout
-                    )
+                self.transformer_encoder = FastTransformerEncoderWrapper(
+                    d_model, nhead, d_hid, nlayers, dropout
+                )
             # flash transformer
             elif fast_transformer_backend == "flash":
                 encoder_layers = FlashTransformerEncoderLayer(
