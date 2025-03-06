@@ -114,10 +114,9 @@ class TransformerModel(nn.Module):
         if use_fast_transformer:
             # linear transformer
             if fast_transformer_backend == "linear":
-                if fast_transformer_backend == "linear":
-                    self.transformer_encoder = FastTransformerEncoderWrapper(
-                        d_model, nhead, d_hid, nlayers, dropout
-                    )
+                self.transformer_encoder = FastTransformerEncoderWrapper(
+                    d_model, nhead, d_hid, nlayers, dropout
+                )
             # flash transformer
             elif fast_transformer_backend == "flash":
                 encoder_layers = FlashTransformerEncoderLayer(
@@ -262,9 +261,9 @@ class TransformerModel(nn.Module):
             
         return eos_emb
     
-    def _formulate_targets(self, input_ind, masked_ind):
+    def _formulate_targets(self, input_ind, masked_ind):  
         formulated_targets = []
-        
+
         device = input_ind.device
         input_shape = input_ind.size()
         if masked_ind is not None:
@@ -329,7 +328,7 @@ class DNAEncoder(nn.Module):
         if num_linear_layers > 1:
             linear_layers.append(nn.Linear(embedding_dim, embedding_dim // 2))
             linear_layers.append(nn.LeakyReLU())
-            linear_layers.append(nn.Linear(embedding_dim // 2, d_model))
+            linear_layers.append(nn.Linear(embedding_dim // 2, d_model))   
             linear_layers.append(nn.LeakyReLU())
         else:
             linear_layers.append(nn.Linear(embedding_dim, d_model))
@@ -362,7 +361,7 @@ class BinEmbedding(nn.Module):
         self.projection_matrix = nn.Linear(bottleneck_dim, embedding_dim, bias=False)
 
     def forward(self, input, use_proj=True):
-        embeddings = self.embedding_matrix(input)  # (batch_size, seq_len, k)
+        embeddings = self.embedding_matrix(input)  # (batch_size, seq_len, k)  
         if use_proj:
             embeddings = self.projection_matrix(embeddings)  # (batch_size, seq_len, d)
         else:

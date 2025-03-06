@@ -105,15 +105,15 @@ class BinVocab:
     
 # example usage     
 if __name__ == '__main__':   
-    bin_file = "/lustre/project/Stat/s1155184322/datasets/atacFormer/bins_5k_table_23chr.txt"
+    bin_file = "/lustre/project/Stat/s1155225024/data/atacFormer/bins_5k_table_23chr.txt"
     bin_vocab = BinVocab(bin_file)
     
-    tokens = [(0,1), (1,2), (0,3)] * 5000
+    tokens = [(1,1), (1,900), (1,22)] * 5000
     bin_vocab.token_to_ind(tokens) 
     
-    indices = [0, 1, 2] * 5000
+    indices = list(range(100))
     bin_vocab.ind_to_token(indices)
     
-    token_names = ["<cls>", "<pad>", "<eos_1>", "<eos_2>", "<eos_3>"]
+    token_names = ["<cls>", "<pad>", "<eos_1>", "<eos_2>", "1:10001-15000"]
     bin_vocab.token_name_to_ind(token_names)
     bin_vocab.token_name_to_token(token_names)
