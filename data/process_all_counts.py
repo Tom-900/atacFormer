@@ -4,7 +4,7 @@ sys.path.append("../")
 import argparse
 from pathlib import Path
 from datasets import Dataset, load_dataset
-from .vocab import BinVocab
+from vocab import BinVocab
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
