@@ -246,25 +246,34 @@ class TransformerModel(nn.Module):
             src_key_padding_mask = input_ind.eq(self.bin_vocab.token_name_to_ind("<pad>")) 
         
         # embedding and transformer
-        transformer_output = self._encode(input_ind,
-                                          dna_emb,
-                                          input_class=input_class,
-                                          src_key_padding_mask=src_key_padding_mask)
+        transformer_output = self._encode(
+            input_ind,
+            dna_emb,
+            input_class=input_class,
+            src_key_padding_mask=src_key_padding_mask,
+            )
+        
         # <eos> embedding
-        eos_emb = self._get_eos_emb_from_layer(input_ind,
-                                               transformer_output) # shape: (batch, 23, d_model)
+        eos_emb = self._get_eos_emb_from_layer(
+            input_ind,
+            transformer_output,
+            ) # shape: (batch, 23, d_model)
         
         # targets
-        formulated_targets = self._formulate_targets(input_chr,
-                                                     input_pos,
-                                                     masked_chr,
-                                                     masked_pos) # list[(batch, num_bins[i]) for i in range(23)]
+        formulated_targets = self._formulate_targets(
+            input_chr,
+            input_pos,
+            masked_chr,
+            masked_pos,
+            ) # list[(batch, num_bins[i]) for i in range(23)]
         
         # decoder output
-        predictions, targets = self.decoder(eos_emb, # list[(batch, sampled_len, 3) for i in range(23)]
-                                            formulated_targets=formulated_targets,
-                                            sampling_prop=decoder_prop,
-                                            ) 
+        predictions, targets = self.decoder(
+            eos_emb, # list[(batch, sampled_len, 3) for i in range(23)]
+            formulated_targets=formulated_targets,
+            sampling_prop=decoder_prop,
+            ) 
+        
         output["predictions"] = predictions  
         output["formulated_targets"] = targets
         output["sampling_prop"] = decoder_prop
@@ -399,14 +408,16 @@ class DNAEncoder(nn.Module):
 
 
 class BinEmbedding(nn.Module):
-    def __init__(self, vocab, embedding_dim, bottleneck_dim):
+    def __init__(self, vocab, embedding_dim, bottleneck_dim, padding_idx=None):
         super(BinEmbedding, self).__init__()
         self.bin_vocab = vocab
         self.embedding_dim = embedding_dim # Final embedding dimension (d)
         self.bottleneck_dim = bottleneck_dim # Bottleneck dimension (k)
 
         # Embedding lookup (V x k)
-        self.embedding_matrix = nn.Embedding(len(self.bin_vocab.vocab), bottleneck_dim) 
+        if padding_idx is None:
+            padding_idx = self.bin_vocab.token_name_to_ind("<pad>")
+        self.embedding_matrix = nn.Embedding(len(self.bin_vocab.vocab), bottleneck_dim, padding_idx=padding_idx) 
         
         # Projection (k x d)
         self.projection_matrix = nn.Linear(bottleneck_dim, embedding_dim, bias=False)
@@ -488,48 +499,46 @@ class Decoder(nn.Module):
         for c in range(23):
             # get bin index in the vocab for chr c
             token_c = [token for token in token_ls if token[0] == c+1]
-            ind_c = torch.tensor(self.bin_vocab.token_to_ind(token_c), device=device) # (num_bins[c], )
+            ind_c = torch.tensor(self.bin_vocab.token_to_ind(token_c), device=device) # (num_bins[c] + 1, )
             
             # For chromosome c, count the mean nonzero counts for each batch, and determine the sampled length
             target_c = formulated_targets[c] # (batch, num_bins[c])
-            sampled_len = torch.sum(target_c > 0, dim=1).float().mean() * (sampling_prop + 1)
-            if sampled_len < torch.sum(target_c > 0, dim=1).max():
-                sampled_len = torch.sum(target_c > 0, dim=1).max() * (sampling_prop + 1)
-            sampled_len = max(10, int(sampled_len.item()))
-              
-            sampled_indices, target = sample_nonzero_with_zeros(target_c, sampled_len) # (batch, sampled_len)
-            sampled_indices = sampled_indices.reshape(-1) # (batch * sampled_len, )
+           
+            sampled_indices, target = sample_zeros(target_c, sampling_prop)
+            batch_len = [len(idx) for idx in sampled_indices]
                 
-            bin_emb_c = self.bin_embedding(ind_c[sampled_indices])  # (batch * sampled_len, bin_emb_dim)
-            bin_emb_c = bin_emb_c.view(batch_size, sampled_len, -1) # (batch, sampled_len, bin_emb_dim)
+            sampled_indices = torch.cat(sampled_indices).long() # (total_len, )
+            target = torch.cat(target).long() # (total_len, )
+            bin_emb_c = self.bin_embedding(ind_c[sampled_indices])  # (total_len, bin_emb_dim)
                 
             # project bin embedding
             if use_bin_proj or self.bin_emb_dim != self.d_model:
-                bin_emb_c = self.bin_projection(bin_emb_c)  # (batch, sampled_len, d_model) 
-            
+                bin_emb_c = self.bin_projection(bin_emb_c)  # (total_len, d_model)
+                    
             # get eos embedding for chromosome c
             eos_emb_c = eos_emb[:, c, :] # (batch, d_model)
-            eos_emb_c = eos_emb_c.unsqueeze(1).repeat(1, sampled_len, 1)  # (batch, sampled_len, d_model)
+            eos_emb_ls = [eos_emb_c[b, :].unsqueeze(0).repeat(batch_len[b], 1) for b in range(batch_size)]
+            eos_emb_c = torch.cat(eos_emb_ls, dim=0)  # (total_len, d_model)
                 
             # concatenate bin and eos embeddings
-            total_emb_c = torch.cat((bin_emb_c, eos_emb_c), dim=2) # (batch, sampled_len, 2*d_model)
-            prediction_c = self.fc(total_emb_c)  # (batch, sampled_len, 3)
-                
+            total_emb_c = torch.cat((bin_emb_c, eos_emb_c), dim=1) # (total_len, 2*d_model)
+            prediction_c = self.fc(total_emb_c)  # (total_len, 3)
+            
             # append to the list
             predictions.append(prediction_c) 
             targets.append(target)
-        
+                
         return predictions, targets
     
-    
-def sample_nonzero_with_zeros(matrix, l):
+
+def sample_zeros(matrix, sampling_prop=1):
     """
     Args:
         matrix: (B, L) tensor with values in {0, 1, 2}
-        l: sampling length (must be <= L)
+        sampling_prop: sampling proportion
     Returns:
-        indices: (B, l) tensor containing column indices
-        values: (B, l) tensor containing corresponding values (0, 1, or 2)
+        indices: [(B, l)] list containing column indices
+        values: [(B, l)] list containing corresponding values (0, 1, or 2)
     """
     B, L = matrix.shape
     device = matrix.device
@@ -540,14 +549,14 @@ def sample_nonzero_with_zeros(matrix, l):
     nonzero_values = [matrix[i, idx] for i, idx in enumerate(nonzero_indices)]
     
     # Calculate number of zeros to sample per row
-    num_zeros_to_sample = l - nonzero_mask.sum(dim=1)  # [B,]
+    num_zeros_to_sample = sampling_prop * nonzero_mask.sum(dim=1)  # [B,]
 
     # Sample positions of zeros
     zero_mask = ~nonzero_mask
     sampled_zero_indices = []
     for i in range(B):
         zero_indices = torch.nonzero(zero_mask[i], as_tuple=True)[0]
-        num_samples = num_zeros_to_sample[i].item()
+        num_samples = min(int(num_zeros_to_sample[i].item()), L-len(nonzero_indices[i]))
         if num_samples > 0:
             # Randomly sample zero positions without replacement
             sampled = zero_indices[torch.randperm(len(zero_indices))[:num_samples]]
@@ -556,27 +565,16 @@ def sample_nonzero_with_zeros(matrix, l):
             sampled_zero_indices.append(torch.tensor([], device=device))
 
     # Combine indices (non-zeros first, then sampled zeros)
-    combined_indices = [
-        torch.cat([nonzero_idx, zero_idx])[:l] 
+    indices = [
+        torch.cat([nonzero_idx, zero_idx])
         for nonzero_idx, zero_idx in zip(nonzero_indices, sampled_zero_indices)
     ]
     
     # Combine corresponding values (non-zero values first, then zeros)
-    combined_values = [
-        torch.cat([nonzero_val, torch.zeros(len(zero_idx), device=device)])[:l]
+    values = [
+        torch.cat([nonzero_val, torch.zeros(len(zero_idx), device=device)])
         for nonzero_val, zero_idx in zip(nonzero_values, sampled_zero_indices)
     ]
-
-    # Create final output tensors with padding where needed
-    indices = torch.stack([
-        torch.cat([idx, torch.full((l - len(idx),), -1, device=device)])[:l] 
-        for idx in combined_indices
-    ]).long()
-    
-    values = torch.stack([
-        torch.cat([val, torch.full((l - len(val),), 0, device=device)])[:l]
-        for val in combined_values
-    ]).long()
 
     return indices, values
         

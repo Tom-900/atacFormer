@@ -68,7 +68,7 @@ raw_dataset = raw_dataset.with_format("torch")
 collator = DataCollator(vocab=bin_vocab,
                         max_input_len=6800,
                         max_masked_len=3000,
-                        masked_ratio=0.15)
+                        masked_ratio=0.0)
 
 # train_sampler = RandomSampler(raw_dataset)
 from torch.utils.data import RandomSampler, SequentialSampler, DataLoader
@@ -89,7 +89,7 @@ for i, batch in enumerate(train_loader):
     data_dict = batch
     break
 
-data_dict = {k: v.to(device) for k, v in data_dict.items()}
+data_dict = {k: (v.to(device) if v is not None else v) for k, v in data_dict.items()}
 
 model = TransformerModel(
     vocab=bin_vocab,
@@ -104,6 +104,6 @@ model = TransformerModel(
 
 from torch.cuda.amp import autocast
 with autocast(enabled=True):
-    output = model(data_dict, decoder_prop=10)
+    output = model(data_dict, decoder_prop=1)
 
-output
+

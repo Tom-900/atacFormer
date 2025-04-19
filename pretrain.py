@@ -343,6 +343,8 @@ if scg.utils.isnotebook():
             "0.0",
             "--no-cls",
             "--fp16",
+            "--log-interval",
+            "20"
         ]
     )
 else:
@@ -586,6 +588,9 @@ if IS_DATA_PARALLEL:
 # load bin vocab
 bin_vocab = BinVocab(args.bin_file)
 TOTAL_BIN_NUM = sum(bin_vocab.bin_num_dict.values())
+
+# do sampling for testing 
+# raw_dataset = Dataset.from_dict(raw_dataset[0:2000])
     
 # convert format to return torch.tensor
 raw_dataset = raw_dataset.with_format("torch")
@@ -964,9 +969,10 @@ def evaluate(model: nn.Module, valid_loader: DataLoader) -> Dict[str, torch.Tens
                     masked_num += mask_c.sum()
                     masked_acc += ((predictions[c].argmax(dim=-1) == formulated_targets[c]) * mask_c).float().sum()
             
-            acc = acc / TOTAL_BIN_NUM / args.batch_size
+            acc = acc / TOTAL_BIN_NUM / args.eval_batch_size
             token_acc = token_acc / token_num if token_num > 0 else 0.0
             masked_acc = masked_acc / masked_num if masked_num > 0 else 0.0
+            print(acc, token_acc, masked_acc)
             
             if USE_CLS:
                 og_acc = (output_dict["og_logits"].argmax(dim=-1) == og_labels).float().mean()
@@ -977,6 +983,8 @@ def evaluate(model: nn.Module, valid_loader: DataLoader) -> Dict[str, torch.Tens
                 + args.acc_weight_2 * masked_acc
             if USE_CLS:
                 total_acc = (1 - args.acc_weight_cls) * total_acc + args.acc_weight_cls * (og_acc + ct_acc)
+            
+            print(total_acc)
             
     total_loss = total_loss / len(valid_loader)
     total_acc = total_acc / len(valid_loader)

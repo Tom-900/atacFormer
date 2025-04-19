@@ -598,7 +598,7 @@ bin_vocab = BinVocab(args.bin_file)
 TOTAL_BIN_NUM = sum(bin_vocab.bin_num_dict.values())
 
 # do sampling for testing 
-raw_dataset = Dataset.from_dict(raw_dataset[0:2000])
+# raw_dataset = Dataset.from_dict(raw_dataset[0:2000])
     
 # convert format to return torch.tensor
 raw_dataset = raw_dataset.with_format("torch")
@@ -754,7 +754,7 @@ def train(model: nn.Module,
         total_og_acc, total_ct_acc = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         
     sampling_prop = args.sampling_prop[epoch-1]
-    state_weights = [1., 2 * (1 - args.masked_ratio) * sampling_prop, 2 * args.masked_ratio * sampling_prop] # 0, 1, 2 weight
+    state_weights = [1., (1 - args.masked_ratio) * sampling_prop, args.masked_ratio * sampling_prop] # 0, 1, 2 weight
     criterion = nn.CrossEntropyLoss(weight=torch.tensor(state_weights, dtype=torch.float).to(device))
     logger.info(f"sampling proportion: {sampling_prop}, state weights: {state_weights}")
     
@@ -798,7 +798,7 @@ def train(model: nn.Module,
             
             mlm_loss = []
             for c in range(23):
-                 mlm_loss_c = criterion(predictions[c].view(-1, 3), formulated_targets[c].view(-1).long())
+                 mlm_loss_c = criterion(predictions[c], formulated_targets[c].long())
                  mlm_loss.append(mlm_loss_c)
             
             mlm_loss = torch.stack(mlm_loss).mean()
@@ -837,7 +837,7 @@ def train(model: nn.Module,
             acc, total_num, token_acc, token_num, masked_acc, masked_num = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
             for c in range(23):
                 acc += (predictions[c].argmax(dim=-1) == formulated_targets[c]).float().sum()
-                total_num += formulated_targets[c].size(0) * formulated_targets[c].size(1)
+                total_num += formulated_targets[c].size(0)
                 token_c = formulated_targets[c] == 1
                 mask_c = formulated_targets[c] == 2
                 if token_c.sum() > 0:
@@ -959,7 +959,7 @@ def evaluate(model: nn.Module, valid_loader: DataLoader, epoch: int) -> Dict[str
 
                 mlm_loss = []
                 for c in range(23):
-                    mlm_loss_c = criterion(predictions[c].view(-1, 3), formulated_targets[c].view(-1).long())
+                    mlm_loss_c = criterion(predictions[c], formulated_targets[c].long())
                     mlm_loss.append(mlm_loss_c)
                 
                 mlm_loss = torch.stack(mlm_loss).mean()
@@ -981,7 +981,7 @@ def evaluate(model: nn.Module, valid_loader: DataLoader, epoch: int) -> Dict[str
                 acc += (predictions[c].argmax(dim=-1) == formulated_targets[c]).float().sum()
                 token_c = formulated_targets[c] == 1
                 mask_c = formulated_targets[c] == 2
-                total_num += formulated_targets[c].size(0) * formulated_targets[c].size(1)
+                total_num += formulated_targets[c].size(0)
                 if token_c.sum() > 0:
                     token_num += token_c.sum()
                     token_acc += ((predictions[c].argmax(dim=-1) == formulated_targets[c]) * token_c).float().sum()
