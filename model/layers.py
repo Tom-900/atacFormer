@@ -72,14 +72,17 @@ class FastTransformerEncoderWrapper(nn.Module):
 
     @staticmethod
     def build_length_mask(
+        #shape of scr: (N, seq_len, embsize)
         src: Tensor,
+        #shape of src_key_padding_mask: (N, seq_len) which is comprising of True/False 
+        # for denoting whether the token is padding or not
         src_key_padding_mask: torch.BoolTensor,
     ) -> LengthMask:
         from fast_transformers.masking import LengthMask
 
         seq_len = src.shape[1]
         num_paddings = src_key_padding_mask.sum(dim=1)
-        actual_seq_len = seq_len - num_paddings  # (N,)
+        actual_seq_len = seq_len - num_paddings  # length of sentence without padding
         length_mask = LengthMask(actual_seq_len, max_len=seq_len, device=src.device)
 
         if src_key_padding_mask[length_mask.bool_matrix].sum() != 0:
@@ -231,9 +234,9 @@ class FlashTransformerEncoderLayer(nn.Module):
             src_key_padding_mask_ = ~src_key_padding_mask
 
         if self.norm_scheme == "pre":
-            src = self.norm1(src)
-            src2 = self.self_attn(src, key_padding_mask=src_key_padding_mask_)[0]
-            src = src + self.dropout1(src2)
+            src = self.norm1(src) 
+            src2 = self.self_attn(src, key_padding_mask=src_key_padding_mask_)[0] #Attention
+            src = src + self.dropout1(src2) #Residual Connection
             src = self.norm2(src)
             src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
             src = src + self.dropout2(src2)

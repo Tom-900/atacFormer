@@ -1,10 +1,14 @@
 # modified from scGPT: https://github.com/bowang-lab/scGPT/blob/integrate-huggingface-model/scgpt/data_collator.py
+import sys
+sys.path.append("../")
+sys.path.append("../..")
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import torch
 import numpy as np
+from data.vocab import BinVocab
 
 
 @dataclass
@@ -14,68 +18,37 @@ class DataCollator:
     the maximum length in the batch and masks atac bin values.
 
     Args:
-        do_padding (:obj:`bool`): whether to pad the sequences to the max length.
-        mask_value (:obj:`int`): the value to fill at the atac postions that
-            are masked.
-        eos_value (:obj:`int`): the first value to fill at the end of the sequences.
-        eos_length (:obj:`int`): the length of the eos values.
-        pad_value (:obj:`int`): the value to use for padding the chr and pos
-            to the max length.
-        do_mlm (:obj:`bool`): whether to do masking with MLM.
-        mlm_probability (:obj:`float`): the probability of masking with MLM.
-        max_length (:obj:`int`, optional): the maximum length of the sequences.
-            This is required if do_padding is True.
-        sampling (:obj:`bool`): whether to do sampling instead of truncation if
-            length > max_length.
+        vocab (:obj:`BinVocab`): the vocabulary.
+        masked_ratio (:obj:`float`): the probability of masking with MLM.
+        max_length (:obj:`int`): the maximum length of the input sequences.
+        max_length_ (:obj:`int`): the maximum length of the masked sequences.
         reserve_keys (:obj:`List[str]`, optional): a list of keys in the examples
             to reserve in the output dictionary. Default to []. These fields
             will be kept unchanged in the output.
         keep_first_n_tokens (:obj:`int`): the number of tokens in the beginning
-            of the sequence to keep unchanged from sampling. This is useful when
-            special tokens have been added to the beginning of the sequence.
-            Default to 1.
+            of the sequence to keep unchanged from masking. Default to 1.
+        keep_last_n_tokens (:obj:`int`): the number of tokens at the end
+            of the sequence to keep unchanged from masking. Default to 23.
     """
-    do_padding: bool = True
-    mask_value: int = -1
-    eos_value: int = -2
-    pad_value: int = -3
-    eos_length: int = 23
-    do_mlm: bool = True
-    mlm_probability: float = 0.15
-    max_length: Optional[int] = None
-    sampling: bool = True
+    vocab: BinVocab
+    masked_ratio: float = 0.15
+    max_input_len: int = 6800
+    max_masked_len: int = 3000
     reserve_keys: List[str] = field(default_factory=lambda: [])
     keep_first_n_tokens: int = 1
+    keep_last_n_tokens: int = 23
 
     def __post_init__(self):
-        if self.do_padding:
-            if self.max_length is None:
-                raise ValueError("`max_length` is required if `do_padding`.")
-            
-        if self.mask_value >= 0:
-            raise ValueError("`mask_value` must be negative.")
-        if self.eos_value >= 0:
-            raise ValueError("`eos_value` must be negative.")
-        if self.pad_value >= 0:
-            raise ValueError("`pad_value` must be negative.")
 
-        if isinstance(self.mlm_probability, float):
-            if self.mlm_probability < 0 or self.mlm_probability >= 1:
-                raise ValueError("`mlm_probability` must be between 0 and 1.")
-        elif isinstance(self.mlm_probability, (list, tuple)):
-            if min(self.mlm_probability) < 0 or max(self.mlm_probability) >= 1:
-                raise ValueError("`mlm_probability` must be between 0 and 1.")
+        if isinstance(self.masked_ratio, float):
+            if self.masked_ratio < 0 or self.masked_ratio >= 1:
+                raise ValueError("`masked_ratio` must be between 0 and 1.")
         else:
-            raise ValueError("`mlm_probability` must be a float or iterable of floats.")
+            raise ValueError("`masked_ratio` must be float.")
 
         if isinstance(self.reserve_keys, str):
             self.reserve_keys = [self.reserve_keys]
 
-        if self.keep_first_n_tokens < 0 or self.keep_first_n_tokens > self.max_length:
-            raise ValueError(
-                "`keep_first_n_tokens` must be between 0 and `max_length` "
-                f"({self.max_length})."
-            )
 
     def __call__(
         self, examples: List[Dict[str, torch.Tensor]]
@@ -83,16 +56,14 @@ class DataCollator:
         """
         Each example is like:
             {'id': tensor(184117),
-             'chr': tensor([1, 1, ..., 23]),
-             'pos': tensor([ 1000,  10001, ..., 20000])}
+             'chr_id': tensor([0, 1, 3, ..., 0, ..., 0]),
+             'pos_id': tensor([0, 1000, 10001, 2, ..., 24])}
 
         Returns:
             Dict[str, torch.Tensor]: a dict of tensors.
             Example:
-                {'chr': tensor([batch_size, seq_length]),
-                'pos': tensor([batch_size, seq_length]),
-                'masked_chr': tensor([batch_size, seq_length + 23]),
-                'masked_pos': tensor([batch_size, seq_length + 23])}
+                {'input_ind': tensor([batch_size, max_input_len]),
+                 'masked_ind': tensor([batch_size, max_masked_len])}
         """
 
         if len(self.reserve_keys) > 0:
@@ -101,229 +72,137 @@ class DataCollator:
                 f"Got {self.reserve_keys} but expected keys in {list(examples[0].keys())}."
             )
 
-        device = examples[0]["chr"].device
+        device = examples[0]["chr_id"].device
 
-        # get the max length
-        max_ori_len = max(len(example["chr"]) for example in examples)
-        _max_length = self.max_length if max_ori_len >= self.max_length else max_ori_len
-        _max_length = _max_length + self.eos_length
+        # get the max input length / masked length
+        _max_len = max(len(example["chr_id"]) for example in examples)
+        
+        _max_input_len = _max_len - int((_max_len - self.keep_first_n_tokens - self.keep_last_n_tokens) * self.masked_ratio)
+        
+        
+        if self.masked_ratio > 0:
+            if _max_input_len > self.max_input_len:
+                #Restrict the max_input_len to self.max_input_len
+                max_input_len = self.max_input_len
+                max_masked_len = min(_max_len - self.max_input_len, self.max_masked_len)
+            else:
+                max_input_len = _max_input_len
+                max_masked_len = min(int((_max_len - self.keep_first_n_tokens - self.keep_last_n_tokens) \
+                    * self.masked_ratio), self.max_masked_len)
+        else:
+            max_input_len = self.max_input_len
+            max_masked_len = 0
 
-        # pad and truncate
-        padded_chr = []
-        padded_pos = []
+        input = []
+        masked = [] if self.masked_ratio > 0 else None
         
         for i in range(len(examples)):
-            chr = examples[i]["chr"]
-            pos = examples[i]["pos"]
-             
-            chr, pos = self._sample_or_truncate_plus_pad(chr, pos, _max_length, self.eos_value, self.eos_length)  
-            padded_chr.append(chr)
-            padded_pos.append(pos)
+            chr_id = examples[i]["chr_id"]
+            pos_id = examples[i]["pos_id"]
+            
+            token = [(int(c), int(p)) for c, p in zip(chr_id, pos_id)]
+            # obtain the cell sentence which is comrpising of open bin indices
+            ind = torch.tensor(self.vocab.token_to_ind(token)) 
+            
+            # mask and pad
+            input_ind, masked_ind = self._mask(chr_id, ind)
+            
+            # input
+            input_ind = self._sample(input_ind, max_length=max_input_len, keep=True)
+            input_ind = self._pad(input_ind, max_length=max_input_len)
+            input.append(input_ind)
 
-        padded_chr = torch.stack(padded_chr, dim=0).to(device)
-        padded_pos = torch.stack(padded_pos, dim=0).to(device)
+            # masked
+            if self.masked_ratio > 0:
+                masked_ind = self._sample(masked_ind, max_length=max_masked_len)
+                masked_ind = self._pad(masked_ind, max_length=max_masked_len)
+                masked.append(masked_ind) 
+
+        input = torch.stack(input, dim=0).to(device)
+        if self.masked_ratio > 0:
+            masked = torch.stack(masked, dim=0).to(device)
         
         data_dict = {
-            "chr": padded_chr,
-            "pos": padded_pos,
+            "input_ind": input,
+            "masked_ind": masked,
         }
 
-        # mask
-        if self.do_mlm:
-            masked_chr, masked_pos = self._mask(
-                padded_chr, padded_pos, self.keep_first_n_tokens
-            )
-        else:
-            masked_chr = padded_chr
-            masked_pos = padded_pos
-            
-        data_dict["masked_chr"] = masked_chr
-        data_dict["masked_pos"] = masked_pos
-
         # add reserved keys
-        device = examples[0]["chr"].device
+        device = examples[0]["chr_id"].device
         for key in self.reserve_keys:
             data_ = [example[key] for example in examples]
             data_dict[key] = torch.stack(data_, dim=0).to(device)
 
         return data_dict
-            
-    def _eos_pad(
-        self,
-        chr: torch.LongTensor,
-        pos: torch.LongTensor,
-        eos_value: int,
-        eos_length: int,
-    ):
-        device = chr.device
-        chr = torch.cat(
-            [
-                chr,
-                torch.full(
-                    (eos_length,),
-                    eos_value,
-                    dtype=chr.dtype,
-                    device=device,
-                ),
-            ]
-        )
-        pos = torch.cat(
-            [
-                pos,
-                torch.full(
-                    (eos_length,),
-                    eos_value,
-                    dtype=chr.dtype,
-                    device=device,
-                ),
-            ]
-        )
-        
-        return chr, pos
     
     def _sample(
         self,
-        chr: torch.LongTensor,
-        pos: torch.LongTensor,
+        ind: torch.LongTensor,
         max_length: int,
-    ) -> Tuple[torch.LongTensor, torch.Tensor]:
+        keep: bool = False,
+    ):
         
-        device = chr.device
-        if self.keep_first_n_tokens == 0:
-            indices = torch.randperm(len(chr), device=device)[:max_length]
-            return chr[indices], pos[indices]
-
-        # keep the first n tokens unchanged
-        _n = self.keep_first_n_tokens
-        indices = torch.randperm(len(chr) - _n, device=device)[:max_length - _n]
-        indices = torch.cat([torch.arange(_n), indices + _n], dim=0)
-        return chr[indices], pos[indices]
+        if len(ind) > max_length:
+            if keep:
+                #candidates for masking
+                ind_kept = ind[self.keep_first_n_tokens:-self.keep_last_n_tokens]
+                #randomly keep max_length - keep_first_n_tokens - keep_last_n_tokens tokens
+                perm_ind = torch.randperm(len(ind_kept))[:max_length - \
+                    self.keep_first_n_tokens - self.keep_last_n_tokens]
+                ind_kept = ind_kept[perm_ind]
+                #length of the final sentence is max_length
+                ind = torch.cat([ind[:self.keep_first_n_tokens], ind_kept, ind[-self.keep_last_n_tokens:]])
+                return ind
+            else:
+                perm_ind = torch.randperm(len(ind))[:max_length]
+                return ind[perm_ind]
+        else:
+            return ind
 
     def _pad(
         self,
-        chr: torch.LongTensor,
-        pos: torch.LongTensor,
+        ind: torch.LongTensor,
         max_length: int,
     ):
-        device = chr.device
-        chr = torch.cat(
-            [
-                chr,
-                torch.full(
-                    (max_length - len(chr),),
-                    self.pad_value,
-                    dtype=chr.dtype,
-                    device=device,
-                ),
-            ]
-        )
-        pos = torch.cat(
-            [
-                pos,
-                torch.full(
-                    (max_length - len(pos),),
-                    self.pad_value,
-                    dtype=pos.dtype,
-                    device=device,
-                ),
-            ]
+        device = ind.device
+        dtype = ind.dtype
+        pad_value = self.vocab.token_name_to_ind("<pad>")
+        
+        assert len(ind) <= max_length, (
+            f"Input length {len(ind)} is greater than max_length {max_length}."
         )
         
-        return chr, pos
-        
-    def _sample_or_truncate_plus_pad(
-        self,
-        chr: torch.LongTensor,
-        pos: torch.LongTensor, 
-        max_length: int,
-        eos_value: int,
-        eos_length: int,
-    ) -> Tuple[torch.LongTensor, torch.Tensor]:
-        
-        assert len(chr) == len(pos)
-        if len(chr) + eos_length == max_length:
-            chr, pos = self._eos_pad(chr, pos, eos_value, eos_length)
-            return chr, pos
-        if len(chr) + eos_length > max_length:  # sample or truncate
-            if self.sampling:
-                chr, pos = self._sample(chr, pos, max_length - eos_length)
-                return self._eos_pad(chr, pos, eos_value, eos_length)
-            else:
-                chr, pos = chr[:max_length - eos_length], pos[:max_length - eos_length]
-                return self._eos_pad(chr, pos, eos_value, eos_length)
-        else:  # pad
-            chr, pos = self._eos_pad(chr, pos, eos_value, eos_length)
-            return self._pad(chr, pos, max_length)
+        ind = torch.cat(
+            [ind, torch.full((max_length - len(ind),), pad_value, dtype=dtype, device=device)]
+        )
+        return ind
+
     
     def _mask(
         self, 
-        chr: torch.Tensor,
-        pos: torch.Tensor,
-        keep_first_n_tokens: int = 0
-    ) -> torch.Tensor:
+        chr_id: torch.LongTensor,
+        ind: torch.LongTensor,
+        ) -> torch.Tensor:
+        
         """
-        Mask the atac chr/pos with MLM.
+        Mask the atac ind with MLM.
         """
-        if keep_first_n_tokens > 0:
-            chr_, pos_ = self._mask(
-                chr[:, keep_first_n_tokens:],
-                pos[:, keep_first_n_tokens:],
-                keep_first_n_tokens=0,
-            )
-            return torch.cat([chr[:, :keep_first_n_tokens], chr_], dim=1), \
-                torch.cat([pos[:, :keep_first_n_tokens], pos_], dim=1)
-
-        device = chr.device
-        shape = chr.shape
-
-        probability_matrix = torch.full(shape, self.get_mlm_probability())
-        # set padded postion and eos positions probability to 0
-        probability_matrix[chr.eq(self.pad_value)] = 0
-        for i in range(self.eos_value - self.eos_length + 1, self.eos_value + 1):
-            probability_matrix[chr.eq(i)] = 0
-
-        mask = torch.bernoulli(probability_matrix).bool()
-        mask = mask.to(device)
-
-        masked_chr = chr.masked_fill(mask, self.mask_value)
-        masked_pos = pos.masked_fill(mask, self.mask_value)
-        return masked_chr, masked_pos
-    
-    def get_mlm_probability(self) -> float:
-        """
-        Get the mlm probability for the current step.
-        """
-        if isinstance(self.mlm_probability, float):
-            return self.mlm_probability
-        elif isinstance(self.mlm_probability, list):
-            # random choose a probability
-            return np.random.choice(self.mlm_probability)
+        if self.masked_ratio > 0:
+            #For a sentence, masked_num is the number of candidate tokens to be masked
+            masked_num = int((len(ind) - self.keep_first_n_tokens - self.keep_last_n_tokens) * self.masked_ratio)
+            #masked_num_ is the number of tokens need to be masked under the restricted input_length(length of sentence after masking)
+            masked_num_ = len(ind) - self.max_input_len
+            masked_num = max(masked_num, masked_num_)
+                
+            bin_ind = torch.nonzero(chr_id != 0).squeeze() # The index of bin in the cell sentence(excluding special tokens)
+            masked_index = torch.randperm(len(bin_ind))[:masked_num]
+            masked_index = bin_ind[masked_index]
+                
+            input_ind = ind[~torch.isin(torch.arange(len(ind)), masked_index)]
+            masked_ind = ind[masked_index]
         else:
-            raise ValueError(
-                "mlm_probability must be a float or a list of floats, "
-                f"but got {self.mlm_probability}."
-            )
+            input_ind = ind
+            masked_ind = None
         
-
-if __name__ == '__main__':
-    example1 = {"id": torch.tensor(184117),
-               "chr": torch.tensor([0, 1, 6, 21, 23, 3, 2, 15, 12, 15]),
-               "pos": torch.tensor([0, 100, 1001, 2000, 400, 10, 244, 13, 134, 234])}
-    
-    example2 = {"id": torch.tensor(184118),
-               "chr": torch.tensor([0, 1, 6, 21, 23, 3]),
-               "pos": torch.tensor([0, 100, 1001, 2000, 400, 10])}
-    
-    examples = [example1, example1, example2]
-    data_collator = DataCollator(do_padding=True, max_length=10, keep_first_n_tokens=1, mlm_probability=0.5)
-    data_dict = data_collator(examples)
-    
-    for key, value in data_dict.items():
-        print(key)
-        print(value)
-        print()
-        
-    tensor = data_dict['masked_chr']
-    
-    
+        return input_ind, masked_ind
     

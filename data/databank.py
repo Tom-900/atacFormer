@@ -31,16 +31,14 @@ class DataTable:
     """
     The data structure for a single-cell data table.
     """
-    #等同于初始化class给self.name和self.data
+
     name: str
     data: Optional[Dataset] = None
 
     @property
     def is_loaded(self) -> bool:
-        #只有当self.data不为空且是Dataset类型时，返回True
         return self.data is not None and isinstance(self.data, Dataset)
-    
-    #save self.data to the specified path and in the specified format
+
     def save(
         self,
         path: Union[Path, str],
@@ -72,7 +70,6 @@ class MetaInfo:
 
     def __post_init__(self):
         if self.on_disk_path is not None:
-            #将path从str转换为Path
             self.on_disk_path: Path = Path(self.on_disk_path)
 
     def save(self, 
@@ -92,11 +89,9 @@ class MetaInfo:
             "main_data": self.main_table_key,
         }
         if suffix is not None and isinstance(suffix, str):
-            #在/path/manifest.suffix.json中保存manifests
             with open(path / f"manifest.{suffix}.json", "w") as f:
                 json.dump(manifests, f, indent=2)
         else:
-            #在/path/manifest.json中保存manifests
             with open(path / f"manifest.json", "w") as f:
                 json.dump(manifests, f, indent=2)
 
@@ -128,10 +123,9 @@ class MetaInfo:
             raise ValueError(f"Path {path} is not a directory.")
         if not (path / "manifest.json").exists():
             raise ValueError(f"Path {path} does not contain manifest.json.")
-        #创造一个新的MetaInfo对象
+
         meta_info = cls()
         meta_info.on_disk_path = path
-        #新的MetaInfo对象调用load方法,将path下的manifest.json文件中的内容加载到自己的属性中
         meta_info.load(path)
         return meta_info
     
@@ -149,10 +143,10 @@ class Setting:
             "whether to remove rows with zero values."
         },
     )
-    max_tokenize_batch_size: int = field(
+    max_batch_size: int = field(
         default=1e6,
         metadata={
-            "help": "Maximum number of cells to tokenize in a batch. "
+            "help": "Maximum number of cells in a batch. "
             "May be useful for processing numpy arrays, currently not used."
         },
     )
@@ -195,7 +189,6 @@ class DataBank:
         if len(self.data_tables) == 0:
             logger.debug("DataBank initialized with meta info only.")
             if self.settings.immediate_save:
-                #初始化meta_info
                 self.sync()
             return
 
@@ -246,7 +239,7 @@ class DataBank:
             to (Path or str): Data directory.
             main_table_key (str): This layer/obsm in anndata will be used as the
                 main data table.
-            token_col (str): Column name of the gene token.
+            token_col (str): Column name of the bin token.
             immediate_save (bool): Whether to save the data immediately after creation.
         Returns:
             DataBank: DataBank instance.
@@ -260,7 +253,7 @@ class DataBank:
 
         if isinstance(to, str):
             to = Path(to)
-        #确保 to 这个目录存在，如果不存在就创建它。
+            
         to.mkdir(parents=True, exist_ok=True)
         db = cls(
             meta_info=MetaInfo(on_disk_path=to),
@@ -284,7 +277,7 @@ class DataBank:
         self,
         adata: AnnData,
         data_keys: Optional[List[str]] = None,
-        token_col: str = "gene name",
+        token_col: Optional[str] = None,
     ) -> List[DataTable]:
         """
         Load anndata into datatables.
@@ -293,9 +286,8 @@ class DataBank:
             adata (:class:`AnnData`): Annotated data object to load.
             data_keys (list of :obj:`str`): List of data keys to load. If None,
                 all data keys in :attr:`adata.X` and :attr:`adata.layers` will be
-                loaded.（需要加载的数据）
-            token_col (:obj:`str`): Column name of the gene token. Tokens will be
-                converted to indices by :attr:`self.gene_vocab`.
+                loaded.
+            token_col (:obj:`str`): Column name of the bin token.
         Returns:
             list of :class:`DataTable`: List of data tables loaded.
         """
@@ -312,25 +304,18 @@ class DataBank:
                 raise ValueError(f"token_col {token_col} must be of type str.")
 
         # validate matching between tokens and vocab
-        #可以用选的bin，如果没有输入选的bin，就用adata.var_names（所有的bin）
         if token_col is not None:
             tokens = adata.var[token_col].tolist()
         else:
             tokens = adata.var_names.tolist()
-            
-        # buld chr, chr_pos
 
         # build mapping to scBank datatable keys
-        # _ind2ind = _map_ind(tokens, self.atac_vocab)  # old index to new index
-
-        # chr is a list comprising of the chromosome names for each bin in tokens
-        # pos is a list comprising of the initial positions for each bin in tokens
-        chr = [23 if i.split(":")[0]=="X" else int(i.split(":")[0]) for i in tokens]
-        pos = [int((int(bin_name.split(":")[1].split("-")[0]) - 1) / 5000 + 1) for bin_name in tokens]
+        chr_id = [23 if i.split(":")[0]=="X" else int(i.split(":")[0]) for i in tokens]
+        pos_id = [int((int(bin_name.split(":")[1].split("-")[0]) - 1) / 5000 + 1) for bin_name in tokens]
 
         data_tables = []
         for key in data_keys:
-            data = self._load_anndata_layer(adata, chr, pos, key)
+            data = self._load_anndata_layer(adata, chr_id, pos_id, key)
             data_table = DataTable(
                 name=key,
                 data=data,
@@ -342,8 +327,8 @@ class DataBank:
     def _load_anndata_layer(
         self,
         adata: AnnData,
-        chr: List[str],
-        pos: List[int],
+        chr_id: List[int],
+        pos_id: List[int],
         data_key: Optional[str] = "X",
     ) -> Optional[Dataset]:
         """
@@ -351,8 +336,8 @@ class DataBank:
 
         Args:
             adata (:class:`AnnData`): Annotated data object to load.
-            chr: list of chromosome names for each bin.
-            pos: list of chromosome positions for each bin.
+            chr_id: list of chromosome index for each bin.
+            pos_id: list of chromosome positions for each bin.
             data_key (:obj:`str`, optional): Data key to load, default to "X". The data
                 key must be in :attr:`adata.X` or :attr:`adata.layers``.
         Returns:
@@ -371,25 +356,25 @@ class DataBank:
             logger.warning(f"Data key {data_key} not found, skip loading.")
             return None
 
-        tokenized_data = self._tokenize(data, chr, pos)
+        data = self._to_ind(data, chr_id, pos_id)
 
-        return Dataset.from_dict(tokenized_data)
+        return Dataset.from_dict(data)
 
-    def _tokenize(
+    def _to_ind(
         self,
         data: Union[np.ndarray, csr_matrix],
-        chr: List[str],
-        pos: List[int],
+        chr_id: List[int],
+        pos_id: List[int],
     ) -> Dict[str, List]:
         """
-        Tokenize the data with the given vocabulary.
+        Extract nonzero bins for each example and transform into chr_id and pos_id.
         
         Args:
-            data (np.ndarray or spmatrix): Data to be tokenized.
-            chr: list of chromosome names for each bin.
-            pos: list of chromosome positions for each bin.
+            data (np.ndarray or spmatrix): Data to be transformed.
+            chr_id: list of chromosome index for each bin.
+            pos_id: list of chromosome positions for each bin.
         Returns:
-            Dict[str, List]: Tokenized data.
+            Dict[str, List]: Transformed data.
         """
         if not isinstance(data, (np.ndarray, csr_matrix)):
             raise ValueError("data must be a numpy array or sparse matrix.")
@@ -417,38 +402,31 @@ class DataBank:
                 data = data[~np.all(data == 0, axis=1)]
 
         n_rows = data.shape[0]
-        chr_array = np.array(chr)
-        pos_array = np.array(pos) 
+        chr_array = np.array(chr_id)
+        pos_array = np.array(pos_id) 
 
         if isinstance(data, csr_matrix):
             indptr = data.indptr
             indices = data.indices
 
-            tokenized_data = {"id": [], "chr": [], "pos": []}
-            tokenized_data["id"] = list(range(n_rows))
+            data = {"id": [], "chr_id": [], "pos_id": []}
+            data["id"] = list(range(n_rows))
             for i in range(n_rows):  # ~2s/100k cells
-                
-                #对于每个细胞，找到对应的非0bin的index
                 row_indices = indices[indptr[i] : indptr[i + 1]]
-                #得到这个细胞内非0bin的chr和pos
-                row_new_chr = chr_array[row_indices]
-                row_new_pos = pos_array[row_indices]
+                chr_nonzero = chr_array[row_indices]
+                pos_nonzero = pos_array[row_indices]
 
-                tokenized_data["chr"].append(row_new_chr) #记录每个细胞非0bin的chr
-                tokenized_data["pos"].append(row_new_pos) #记录每个细胞的pos
-            # tokenized_data["chr"] is a list comprising of lists. Each sublist contains the chromosome names for each non-zero bin in a cell.
-            # tokenized_data["pos"] is a list comprising of lists. Each sublist contains the chromosome positions for each non-zero bin in a cell.
+                data["chr_id"].append(chr_nonzero)
+                data["pos_id"].append(pos_nonzero)
         else:
-            tokenized_data = _nparray2mapped_values(data, chr, pos, "numba")  
+            data = _nparray2mapped_values(data, chr_id, pos_id, "numba")  
 
-        return tokenized_data
+        return data
 
     @classmethod
     def from_path(cls, path: Union[Path, str]) -> Self:
         """
-        Create a DataBank from a directory containing scBank data. **NOTE**: this
-        method will automatically check whether md5sum record in the :file:`manifest.json`
-        matches the md5sum of the loaded gene vocabulary.
+        Create a DataBank from a directory containing scBank data.
 
         Args:
             path (Path or str): Directory path.
@@ -463,7 +441,7 @@ class DataBank:
         if not path.is_dir():
             raise ValueError(f"Path {path} is not a directory.")
 
-        data_table_files = [f for f in path.glob("*.datatable.*") if f.is_file()] #查找目录下所有符合datatable的文件
+        data_table_files = [f for f in path.glob("*.datatable.*") if f.is_file()]
         if len(data_table_files) == 0:
             logger.warning(f"Loading empty DataBank at {path} without datatables.")
 
@@ -495,15 +473,12 @@ class DataBank:
         if len(self.data_tables) > 0:
             if self.main_table_key is None:
                 raise ValueError("Main table key can not be empty if non-empty data tables.")
-            if self.main_table_key not in self.data_tables.keys():
-                #检查main_table_key是否在data_tables中
-                
+            if self.main_table_key not in self.data_tables.keys(): # if self.main_table_key not in self.data_tables
                 raise ValueError("Main table key {self.main_table_key} not found in data tables.")
 
     def update_datatables(
         self,
         new_tables: List[DataTable],
-        #指定每个数据表的name
         use_names: List[str] = None,
         overwrite: bool = False,
         immediate_save: Optional[bool] = None,
@@ -533,7 +508,6 @@ class DataBank:
                 raise ValueError("use_names must have the same length as new_tables.")
 
         if not overwrite:
-            #Check the overlapping of the new data table names and the existing data table names
             overlaps = set(use_names) & set(self.data_tables.keys())
             if len(overlaps) > 0:
                 raise ValueError(
@@ -551,11 +525,9 @@ class DataBank:
         if self.settings.immediate_save:
             self.sync(["data_tables"])
 
-    #attr_keys: 需要同步的属性列表
     def sync(self, 
-             attr_keys: Union[List[str], str, None] = None ,
+             attr_keys: Union[List[str], str, None] = None,
              suffix: Optional[str] = None) -> None:
-        #选择性覆盖现有的DataBank中的data table
         """
         Sync the current DataBank to a data directory, including, save the updated
         data/vocab to files, update the meta info and save to files.
@@ -569,9 +541,6 @@ class DataBank:
             attr_keys = ["meta_info", "data_tables"]
         elif isinstance(attr_keys, str):
             attr_keys = [attr_keys]
-
-        # TODO: implement. Remeber particularly to update md5 in metainfo when
-        # updating the gene vocabulary.
 
         on_disk_path = self.meta_info.on_disk_path
         data_format = self.meta_info.on_disk_format
@@ -598,8 +567,8 @@ class DataBank:
 
 def _nparray2mapped_values(
     data: np.ndarray,
-    chr: List[str],
-    pos: List[int],
+    chr_id: List[int],
+    pos_id: List[int],
     mode: Literal["plain", "numba"] = "plain",
 ) -> Dict[str, List]:
     """
@@ -607,8 +576,8 @@ def _nparray2mapped_values(
 
     Args:
         data (np.ndarray): Data matrix.
-        chr: list of chromosome names for each bin.
-        pos: list of chromosome positions for each bin.
+        chr_id: list of chromosome index for each bin.
+        pos_id: list of chromosome positions for each bin.
         mode (Literal["plain", "numba"]): Mode to use for conversion.
 
     Returns:
@@ -620,43 +589,43 @@ def _nparray2mapped_values(
         convert_func = _nparray2indexed_values_numba
     else:
         raise ValueError(f"Unknown mode {mode}.")
-    tokenized_data = {}
-    row_ids, chr_, pos_ = convert_func(data, chr, pos)
+    data = {}
+    row_id, chr_id, pos_id = convert_func(data, chr_id, pos_id)
 
-    tokenized_data["id"] = row_ids
-    tokenized_data["chr"] = chr_
-    tokenized_data["pos"] = pos_
-    return tokenized_data
+    data["id"] = row_id
+    data["chr_id"] = chr_id
+    data["pos_id"] = pos_id
+    return data
 
 
 def _nparray2indexed_values(
     data: np.ndarray,
-    chr: List[str],
-    pos: List[int],
+    chr_id: List[int],
+    pos_id: List[int],
 ) -> Tuple[List, List, List]:
     """
     Convert a numpy array to indexed values. Only include the non-zero values.
 
     Args:
         data (np.ndarray): Data matrix.
-        chr: list of chromosome names for each bin.
-        pos: list of chromosome positions for each bin.
+        chr_id: list of chromosome index for each bin.
+        pos_id: list of chromosome positions for each bin.
 
     Returns:
-        Tuple[List, List, List]: Row IDs, chromosome names, and chromosome positions.
+        Tuple[List, List, List]: Row ID, chromosome index, and chromosome positions.
     """
-    row_ids, chr_ls, pos_ls = [], [], []
+    row_id, chr_ls, pos_ls = [], [], []
     for i in range(len(data)):  # TODO: accelerate with numba? joblib?
         row = data[i]
-        idx = np.nonzero(row)[0] #the index of columns that are non-zero in the specific row
-        chr_ = chr[idx]
-        pos_ = pos[idx]
+        idx = np.nonzero(row)[0]
+        chr_nonzero = chr_id[idx]
+        pos_nonzero = pos_id[idx]
 
-        row_ids.append(i)
-        chr_ls.append(chr_)
-        pos_ls.append(pos_)
+        row_id.append(i)
+        chr_ls.append(chr_nonzero)
+        pos_ls.append(pos_nonzero)
 
-    return row_ids, chr_ls, pos_ls
+    return row_id, chr_ls, pos_ls
 
 
 from numba import jit, njit, prange
@@ -664,8 +633,8 @@ from numba import jit, njit, prange
 @njit(parallel=True)
 def _nparray2indexed_values_numba(
     data: np.ndarray,
-    chr: List[str],
-    pos: List[int],
+    chr_id: List[int],
+    pos_id: List[int],
 ) -> Tuple[List, List, List]:
     """
     Convert a numpy array to indexed values. Only include the non-zero values.
@@ -673,13 +642,13 @@ def _nparray2indexed_values_numba(
 
     Args:
         data (np.ndarray): Data matrix.
-        chr: list of chromosome names for each bin.
+        chr: list of chromosome index for each bin.
         pos: list of chromosome positions for each bin.
 
     Returns:
         Tuple[List, List, List]: Row IDs, column indices, and values.
     """
-    row_ids, chr_ls, pos_ls = (
+    row_id, chr_ls, pos_ls = (
         [1] * len(data),
         [np.empty(0, dtype=np.int64)] * len(data),
         [np.empty(0, dtype=data.dtype)] * len(data),
@@ -687,13 +656,13 @@ def _nparray2indexed_values_numba(
     for i in prange(len(data)):
         row = data[i]
         idx = np.nonzero(row)[0]
-        chr_ = chr[idx]
-        pos_ = pos[idx]
+        chr_nonzero = chr_id[idx]
+        pos_nonzero = pos_id[idx]
 
-        row_ids[i] = i
-        chr_ls[i] = chr_
-        pos_ls[i] = pos_
+        row_id[i] = i
+        chr_ls[i] = chr_nonzero
+        pos_ls[i] = pos_nonzero
 
-    return row_ids, chr_ls, pos_ls
+    return row_id, chr_ls, pos_ls
 
 
