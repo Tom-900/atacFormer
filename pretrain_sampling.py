@@ -441,6 +441,9 @@ if args.data_source.endswith("atacFormer"):
     DATA_BASE = [f for f in os.listdir(args.data_source) 
                      if os.path.isdir(os.path.join(args.data_source, f))]
     
+    # only HuBMAP and HCA are supported
+    DATA_BASE = [data_base for data_base in DATA_BASE if data_base in ["HuBMAP", "HCA"]] 
+    
     for database in DATA_BASE:
         DATA_LIST = [f for f in os.listdir(os.path.join(args.data_source, database)) 
                        if os.path.isdir(os.path.join(args.data_source, database, f))]
@@ -599,6 +602,9 @@ TOTAL_BIN_NUM = sum(bin_vocab.bin_num_dict.values())
 
 # do sampling for testing 
 # raw_dataset = Dataset.from_dict(raw_dataset[0:2000])
+
+# shuffle the dataset and only select half of the dataset
+raw_dataset = raw_dataset.shuffle(seed=42).train_test_split(test_size=0.5, seed=42)["train"]
     
 # convert format to return torch.tensor
 raw_dataset = raw_dataset.with_format("torch")
@@ -909,7 +915,8 @@ def train(model: nn.Module,
 
         # immediately eval and save
         if batch % args.save_interval == 0 and batch > 0:
-            eval_and_save(model, valid_loader, global_iter)
+            # eval_and_save(model, valid_loader, global_iter)
+            eval_and_save(model, valid_loader, epoch)
             model.train()  # important, reset to train mode
 
 
@@ -921,7 +928,7 @@ def evaluate(model: nn.Module, valid_loader: DataLoader, epoch: int) -> Dict[str
     total_loss, total_acc = 0.0, 0.0
     
     sampling_prop = args.sampling_prop[epoch-1]
-    state_weights = [1., 2 * (1 - args.masked_ratio) * sampling_prop, 2 * args.masked_ratio * sampling_prop] # 0, 1, 2 weight
+    state_weights = [1., (1 - args.masked_ratio) * sampling_prop, args.masked_ratio * sampling_prop] # 0, 1, 2 weight
     criterion = nn.CrossEntropyLoss(weight=torch.tensor(state_weights, dtype=torch.float).to(device))
 
     with torch.no_grad():
