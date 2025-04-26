@@ -362,7 +362,8 @@ IS_DATA_PARALLEL = args.local_rank != -1
 if IS_DATA_PARALLEL:
     # These two lines is to solve issue #1 based on the suggestion from
     # https://discuss.pytorch.org/t/94382
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.local_rank)
+    if "CUDA_VISIBLE_DEVICES" not in os.environ:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.local_rank)
 
     torch.distributed.init_process_group(
         backend="nccl",
@@ -371,13 +372,14 @@ if IS_DATA_PARALLEL:
     )
     # specify device 0 since the CUDA_VISIBLE_DEVICES is set to one GPU
     # https://discuss.pytorch.org/t/67488/4
-    device = torch.device("cuda:0")
+    # device = torch.device("cuda:0")
     n_gpu = torch.cuda.device_count()
+    device = torch.device(f"cuda:{args.local_rank % n_gpu}")
     world_size = torch.distributed.get_world_size()
-
+    
     logger.info(
         f"device: {device} in world size {world_size}, "
-        f"visible gpu(s): {os.environ['CUDA_VISIBLE_DEVICES']}/{n_gpu}"
+        f"visible gpu(s): {args.local_rank % n_gpu + 1}/{n_gpu}"
     )
 else:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
