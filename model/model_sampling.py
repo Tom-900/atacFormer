@@ -55,7 +55,7 @@ class TransformerModel(nn.Module):
         dna_emb_dim: int = 512, # DNA embedding dim
         nlayers_dna_enc: int = 2, # number of layers in the DNA encoder
         n_eos: int = 23, # the number of <eos> tokens
-        bottoleneck_dim: int = 64, # bottleneck dim for bin embedding
+        bin_emb_dim: int = 64, # dim for bin embedding
         decoder_dim: int = 64, # decoder dim
         n_cls: Tuple[int, int] = (1, 1), # the number of classes for classification (organ, celltype)
         nlayers_cls: int = 3,   # the number of layers in the classifier
@@ -113,10 +113,11 @@ class TransformerModel(nn.Module):
         self.bin_vocab = vocab
         
         # Bin encoder
-        self.bin_encoder = BinEmbedding(vocab=self.bin_vocab,
-                                        embedding_dim=d_model,
-                                        bottleneck_dim=bottoleneck_dim,
-                                        )
+        self.bin_encoder = BinEmbedding(
+            vocab=self.bin_vocab,
+            d_model=d_model,
+            bin_emb_dim=bin_emb_dim
+            )
         
         # Transformer encoder
         if use_fast_transformer:
@@ -158,17 +159,19 @@ class TransformerModel(nn.Module):
             self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
 
         # Model decoders
-        self.decoder = Decoder(vocab=self.bin_vocab,
-                               bin_embedding=self.bin_encoder.embedding_matrix,
-                               eos_emb_dim=d_model,
-                               bin_emb_dim=bottoleneck_dim,
-                               d_model=decoder_dim,
-                               )
+        self.decoder = Decoder(
+            vocab=self.bin_vocab,
+            decoder_dim=decoder_dim,
+            bin_embedding=self.bin_encoder.embedding_matrix,
+            eos_emb_dim=d_model,
+            bin_emb_dim=bin_emb_dim,
+            )
             
-        self.cls_decoder = ClsDecoder(d_model,
-                                      n_cls,
-                                      nlayers=nlayers_cls,
-                                      )
+        self.cls_decoder = ClsDecoder(
+            d_model,
+            n_cls,
+            nlayers=nlayers_cls
+            )
     
     # get cell embedding from the transformer output
     def _get_cell_emb_from_layer(self, layer_output: Tensor, weights: Tensor = None) -> Tensor:
@@ -408,26 +411,26 @@ class DNAEncoder(nn.Module):
 
 
 class BinEmbedding(nn.Module):
-    def __init__(self, vocab, embedding_dim, bottleneck_dim, padding_idx=None):
+    def __init__(self, vocab, d_model, bin_emb_dim, padding_idx=None):
         super(BinEmbedding, self).__init__()
         self.bin_vocab = vocab
-        self.embedding_dim = embedding_dim # Final embedding dimension (d)
-        self.bottleneck_dim = bottleneck_dim # Bottleneck dimension (k)
+        self.d_model = d_model # Final embedding dimension (d)
+        self.bin_emb_dim = bin_emb_dim # Bottleneck dimension (k)
 
         # Embedding lookup (V x k)
         if padding_idx is None:
             padding_idx = self.bin_vocab.token_name_to_ind("<pad>")
-        self.embedding_matrix = nn.Embedding(len(self.bin_vocab.vocab), bottleneck_dim, padding_idx=padding_idx) 
+        self.embedding_matrix = nn.Embedding(len(self.bin_vocab.vocab), bin_emb_dim, padding_idx=padding_idx) 
         
         # Projection (k x d)
-        self.projection_matrix = nn.Linear(bottleneck_dim, embedding_dim, bias=False)
+        self.projection_matrix = nn.Linear(bin_emb_dim, d_model, bias=False)
 
     def forward(self, input, use_proj=True):
         embeddings = self.embedding_matrix(input)  # (batch_size, seq_len, k)
         if use_proj:
             embeddings = self.projection_matrix(embeddings)  # (batch_size, seq_len, d)
         else:
-            assert self.bottleneck_dim == self.embedding_dim, "The bottleneck_dim should be equal to embedding_dim"
+            assert self.bin_emb_dim == self.d_model, "The bin_emb_dim should be equal to d_model"
 
         return embeddings
     
@@ -449,7 +452,7 @@ class Decoder(nn.Module):
         self,
         vocab: BinVocab,
         bin_embedding: nn.Embedding,
-        d_model: int,
+        decoder_dim: int,
         eos_emb_dim: int,
         bin_emb_dim: int,
         num_states: int = 3, # 0: not present, 1: present, 2: masked
@@ -457,7 +460,7 @@ class Decoder(nn.Module):
     ):
         super(Decoder, self).__init__()
         
-        self.d_model = d_model
+        self.decoder_dim = decoder_dim
         self.bin_emb_dim = bin_emb_dim
         self.eos_emb_dim = eos_emb_dim
         
@@ -466,19 +469,17 @@ class Decoder(nn.Module):
         self.bin_vocab = vocab
         
         # projection for bin embedding and <eos> embedding
-        self.bin_projection = nn.Linear(bin_emb_dim, d_model, bias=False)
-        self.eos_projection = nn.Linear(eos_emb_dim, d_model)
+        self.bin_projection = nn.Linear(bin_emb_dim, decoder_dim, bias=False)
+        self.eos_projection = nn.Linear(eos_emb_dim, decoder_dim)
         
         # fully connected layer for total embedding
         self.fc = nn.Sequential(
-            nn.Linear(d_model * 2, num_states),
+            nn.Linear(decoder_dim * 2, num_states),
             nn.ReLU(),
         )
     
     def forward(self,
                 eos_emb: Tensor, # (batch, 23, embedding_dim)
-                use_bin_proj: bool=False,
-                use_eos_proj: bool=True,
                 sampling_prop: float=1,
                 formulated_targets: Optional[Tensor]=None, # list[(batch, num_bins[i]) for i in range(23)]
                 ):  
@@ -489,7 +490,7 @@ class Decoder(nn.Module):
         device = eos_emb.device
 
         # project eos embedding
-        if use_eos_proj or self.eos_emb_dim != self.d_model:
+        if self.eos_emb_dim != self.decoder_dim:
             eos_emb = self.eos_projection(eos_emb)  # (batch, 23, d_model)
         
         token_ls = self.bin_vocab.vocab["token"].tolist() # token list for ATAC bins
@@ -512,7 +513,7 @@ class Decoder(nn.Module):
             bin_emb_c = self.bin_embedding(ind_c[sampled_indices])  # (total_len, bin_emb_dim)
                 
             # project bin embedding
-            if use_bin_proj or self.bin_emb_dim != self.d_model:
+            if self.bin_emb_dim != self.decoder_dim:
                 bin_emb_c = self.bin_projection(bin_emb_c)  # (total_len, d_model)
                     
             # get eos embedding for chromosome c

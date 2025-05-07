@@ -263,10 +263,10 @@ parser.add_argument(
     "Default is 512.",
 )
 parser.add_argument(
-    "--bottoleneck-dim",
+    "--bin-emb-dim",
     type=int,
     default=64,
-    help="The bottleneck dim for bin embedding. Default is 64.",
+    help="The dim for bin embedding. Default is 64.",
 )
 parser.add_argument(
     "--dropout",
@@ -690,7 +690,7 @@ model = TransformerModel(
     use_dna_encoder=args.use_dna_encoder,
     use_class_emb=args.use_class_emb,
     nlayers_dna_enc=args.nlayers_dna_enc,
-    bottoleneck_dim=args.bottoleneck_dim,
+    bin_emb_dim=args.bin_emb_dim,
     decoder_dim=args.decoder_dim,
     nlayers_cls=args.n_layers_cls,
     n_cls=(num_types_organs, num_types_celltypes) if USE_CLS else (1, 1),
